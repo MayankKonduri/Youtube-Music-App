@@ -1,8 +1,8 @@
 # YT Music Mini
 
 A floating mini player for the YouTube Music desktop app on Windows. When you minimize YouTube Music,
-a small always-on-top player appears in the corner of the screen; when you open YouTube Music again,
-it disappears. Works on Windows 10 and 11.
+or click another window that covers most of it, a small always-on-top player appears in the corner of
+the screen; when YouTube Music is back in view, it disappears. Works on Windows 10 and 11.
 
 <p align="center">
   <img src="docs/desktop.png" width="900" alt="A Windows 11 desktop with the mini player in the bottom-right corner above the taskbar, playing Clair de Lune by Claude Debussy, and the app's icon in the system tray">
@@ -19,7 +19,7 @@ The mini player shows:
 - previous, play/pause and next buttons
 - a red time bar you can click or drag to jump within the song
 - a **−** button that shrinks it to a compact player (just the cover, with previous / play-pause / next underneath); click the cover to bring the full player back in the same spot. It remembers which size you left it at.
-- a button to reopen YouTube Music, and one to hide the player until the next minimize
+- a button to bring YouTube Music to the front, and one to hide the player until YouTube Music is next minimized or covered
 
 Little touches:
 - **Colors from the artwork:** the artwork's main color fills the left and its second color the right, meeting at a soft, wavy edge that slowly drifts and tilts around the middle. Both are bright, bold colors built in OKLCH (a color model where equal lightness looks equally bright). Covers with a single main color get a nearby shifted shade on the right. It fades to the next song's colors.
@@ -34,14 +34,14 @@ Little touches:
 2. Download **YTMusicMini.exe** from the [latest release](https://github.com/MayankKonduri/Youtube-Music-App/releases/latest).
 3. Move it somewhere permanent, such as your Documents folder. It starts with Windows from wherever it's kept.
 4. Double-click it. The app isn't code-signed, so Windows shows "Windows protected your PC": click **More info**, then **Run anyway**.
-5. A notification confirms it's running. Minimize YouTube Music to see the mini player.
+5. A notification confirms it's running. Minimize YouTube Music (or click another window over it) to see the mini player.
 
 Nothing else needs installing: it uses .NET Framework 4.8, which is built into Windows 10 and 11.
 
 ## How it works
 
 - **The app:** YouTube Music installed from the browser ("Open in app" on music.youtube.com in Chrome, Edge or Brave).
-- **Detecting minimize:** the mini player listens for Windows minimize/restore events on that window.
+- **When it shows:** the mini player listens for Windows window events (minimize and restore, another window coming to the front, a window finishing a move or resize) and also checks a few times a second. It shows when YouTube Music is minimized, or when more than half of it is hidden behind other windows. It hides once at least two-thirds of it is back in view. A YouTube Music window that's in plain view on another monitor doesn't bring it up, and it doesn't pop up over games, full-screen videos or slideshows. To have it show only on minimize, untick **Show when YouTube Music is covered** in the tray menu.
 - **Song info and controls:** these come from Windows' own media controls (the same source as the volume flyout), so nothing inside YouTube Music is changed and you stay signed in as usual.
 - **Choosing the right session:** the session reported by the installed web app is matched against the song title in the YouTube Music window, so a video playing in an ordinary browser tab is ignored. Once found, the app's session id is remembered, so a paused song (whose window title is just "YouTube Music") is still recognized.
 
@@ -54,7 +54,7 @@ No SDK is needed. It's built with the C# compiler that ships with Windows (.NET 
 .\build.ps1 -NoInstall  # only builds into .\bin
 ```
 
-The first run adds a "Start with Windows" entry for your user account. To turn it off, right-click the tray icon (in the hidden-icons area by the clock). The tray menu also has **Exit**.
+The first run adds a "Start with Windows" entry for your user account. To turn it off, right-click the tray icon (in the hidden-icons area by the clock). The tray menu also has **Show when YouTube Music is covered** (on by default) and **Exit**.
 
 To check the design without touching any media:
 

@@ -1,5 +1,5 @@
 // YT Music Mini: a floating mini player that appears whenever the YouTube Music app (the Chrome/Edge
-// "Open in app" window) is minimized, and hides again when it is restored.
+// "Open in app" window) is minimized or mostly covered by other windows, and hides again when it is back in view.
 // Now-playing info and the controls come from Windows' media system (the same source as the volume
 // flyout), so nothing inside YouTube Music is modified.
 // Built with the C# compiler that ships with Windows (.NET Framework 4.x, C# 5) - see build.ps1.
@@ -34,8 +34,8 @@ using AsyncStatus = Windows.Foundation.AsyncStatus;
 [assembly: System.Reflection.AssemblyTitle("YT Music Mini")]
 [assembly: System.Reflection.AssemblyDescription("Floating mini player for the YouTube Music app")]
 [assembly: System.Reflection.AssemblyProduct("YT Music Mini")]
-[assembly: System.Reflection.AssemblyVersion("1.0.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.4.0")]
 
 namespace YTMusicMini
 {
@@ -64,6 +64,30 @@ namespace YTMusicMini
         public const int SW_RESTORE = 9, GWL_EXSTYLE = -20;
         public const int WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;
         public const uint GW_OWNER = 4;
+
+        // For telling whether YouTube Music is covered by other windows.
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT value, int size);
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder name, int max);
+        [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state);
+        public const uint EVENT_SYSTEM_FOREGROUND = 0x0003, EVENT_SYSTEM_MOVESIZEEND = 0x000B, GW_HWNDPREV = 3;
+        public const int WS_EX_TRANSPARENT = 0x20, DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14;
+
+        public static string ClassName(IntPtr hwnd)
+        {
+            var sb = new StringBuilder(256);
+            GetClassName(hwnd, sb, sb.Capacity);
+            return sb.ToString();
+        }
+
+        // True while a game, full-screen video or slideshow is in front (Windows' own "busy" check,
+        // the one it uses to hold back notifications).
+        public static bool FullScreenAppRunning()
+        {
+            int state;
+            try { return SHQueryUserNotificationState(out state) == 0 && state >= 2 && state <= 4; }
+            catch { return false; }
+        }
 
         [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
@@ -130,6 +154,55 @@ namespace YTMusicMini
                 return true;
             }, IntPtr.Zero);
             return found;
+        }
+
+        // Shell windows that sit above everything for a moment (taskbar, Start, Alt+Tab, Task View) and
+        // shouldn't count as covering YouTube Music.
+        static readonly string[] ShellClasses = { "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Windows.UI.Core.CoreWindow",
+                                                  "XamlExplorerHostIslandWindow", "MultitaskingViewFrame", "ForegroundStaging" };
+
+        // How much of the window (0 to 1) is hidden behind other windows, judged on a grid of points across
+        // the part of it that's on a screen. Hidden and minimized windows, windows on other virtual desktops,
+        // click-through overlays, tool windows (including this player) and shell windows don't count.
+        public static double CoveredFraction(IntPtr hwnd)
+        {
+            Native.RECT r;
+            if (!Bounds(hwnd, out r) || r.Right - r.Left < 8 || r.Bottom - r.Top < 8) return 0;
+            var above = new List<Native.RECT>();
+            for (IntPtr h = Native.GetWindow(hwnd, Native.GW_HWNDPREV); h != IntPtr.Zero; h = Native.GetWindow(h, Native.GW_HWNDPREV))
+            {
+                if (!Native.IsWindowVisible(h) || Native.IsIconic(h) || Cloaked(h)) continue;
+                if ((Native.GetWindowLong(h, Native.GWL_EXSTYLE) & (Native.WS_EX_TOOLWINDOW | Native.WS_EX_TRANSPARENT)) != 0) continue;
+                if (Array.IndexOf(ShellClasses, Native.ClassName(h)) >= 0) continue;
+                Native.RECT o;
+                if (Bounds(h, out o) && o.Right > r.Left && o.Left < r.Right && o.Bottom > r.Top && o.Top < r.Bottom) above.Add(o);
+            }
+            const int Cols = 16, Rows = 10;
+            int onScreen = 0, covered = 0;
+            for (int i = 0; i < Cols; i++)
+                for (int j = 0; j < Rows; j++)
+                {
+                    int x = r.Left + (int)((i + 0.5) * (r.Right - r.Left) / Cols);
+                    int y = r.Top + (int)((j + 0.5) * (r.Bottom - r.Top) / Rows);
+                    if (Native.MonitorFromPoint(new Native.POINT(x, y), 0) == IntPtr.Zero) continue;
+                    onScreen++;
+                    foreach (var o in above)
+                        if (x >= o.Left && x < o.Right && y >= o.Top && y < o.Bottom) { covered++; break; }
+                }
+            return onScreen == 0 ? 0 : (double)covered / onScreen;
+        }
+
+        // The window's visible frame (without the invisible resize borders Windows adds around it).
+        static bool Bounds(IntPtr h, out Native.RECT r)
+        {
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out r, Marshal.SizeOf(typeof(Native.RECT))) == 0) return true;
+            return Native.GetWindowRect(h, out r);
+        }
+
+        public static bool Cloaked(IntPtr h)
+        {
+            int c;
+            return Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out c, 4) == 0 && c != 0;
         }
     }
 
@@ -1524,6 +1597,8 @@ namespace YTMusicMini
         public string Snap = "";
         public string AppId = "";
         public bool StartupConfigured, Compact;
+        // Also show the player while YouTube Music is mostly hidden behind other windows.
+        public bool ShowWhenCovered = true;
 
         public static Settings Load()
         {
@@ -1542,6 +1617,7 @@ namespace YTMusicMini
                     if (k == "snap") s.Snap = v;
                     if (k == "appId") s.AppId = v;
                     if (k == "compact") s.Compact = v == "1";
+                    if (k == "covered") s.ShowWhenCovered = v != "0";
                     if (k == "startupConfigured") s.StartupConfigured = v == "1";
                 }
             }
@@ -1561,6 +1637,7 @@ namespace YTMusicMini
                     "snap=" + Snap + "\r\n" +
                     "appId=" + AppId + "\r\n" +
                     "compact=" + (Compact ? "1" : "0") + "\r\n" +
+                    "covered=" + (ShowWhenCovered ? "1" : "0") + "\r\n" +
                     "startupConfigured=" + (StartupConfigured ? "1" : "0") + "\r\n");
             }
             catch { }
@@ -1573,18 +1650,21 @@ namespace YTMusicMini
         const string RunName = "YT Music Mini";
         // Snapping: distance from the screen edge when snapped, and how close counts as "near".
         const double SnapMargin = 14, SnapReach = 40;
+        // Share of YouTube Music that has to be hidden behind other windows for the player to show, and
+        // the share below which it hides again (the gap keeps it from flickering around one value).
+        const double CoverShow = 0.5, CoverHide = 0.33;
 
         readonly Media media = new Media();
         readonly Settings settings = Settings.Load();
         MiniWindow win;
         WinForms.NotifyIcon tray;
-        WinForms.ToolStripMenuItem startupItem;
+        WinForms.ToolStripMenuItem startupItem, coveredItem;
         Native.WinEventProc hookProc;
-        IntPtr hook;
+        readonly List<IntPtr> hooks = new List<IntPtr>();
         IntPtr yt = IntPtr.Zero;
         bool watching, dismissed, refreshing, refreshAgain;
         DateTime missingSince = DateTime.MinValue;
-        DispatcherTimer timer;
+        DispatcherTimer timer, settle;
         int ticks;
         string shownKey = "";
         int shownArtVersion;
@@ -1632,17 +1712,19 @@ namespace YTMusicMini
 
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             timer.Tick += delegate { Tick(); };
+            settle = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+            settle.Tick += delegate { settle.Stop(); Check(); };
 
             SetupTray();
             if (!settings.StartupConfigured)
             {
                 // First run: start with Windows, and say it's running (otherwise nothing visible happens
-                // until YouTube Music is minimized).
+                // until YouTube Music is minimized or covered).
                 SetStartup(true);
                 settings.StartupConfigured = true;
                 settings.Save();
                 tray.ShowBalloonTip(8000, "YT Music Mini is running",
-                    "Minimize YouTube Music to see the mini player. Right-click this tray icon for options.", WinForms.ToolTipIcon.None);
+                    "Minimize YouTube Music, or switch to another window, to see the mini player. Right-click this tray icon for options.", WinForms.ToolTipIcon.None);
             }
             // If the app was moved since, point "Start with Windows" at its new location.
             else if (IsStartupEnabled()) SetStartup(true);
@@ -1654,13 +1736,20 @@ namespace YTMusicMini
             try { await media.Init(); }
             catch (Exception ex) { Log.Write("Media init failed: " + ex.Message); }
 
+            // Window events: minimize/restore, another window coming to the front, and a window finishing a
+            // move or resize. Each one re-checks straight away, so the player shows without a delay.
             hookProc = OnWinEvent;
-            hook = Native.SetWinEventHook(Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND, IntPtr.Zero, hookProc, 0, 0,
-                Native.WINEVENT_OUTOFCONTEXT | Native.WINEVENT_SKIPOWNPROCESS);
+            foreach (var range in new[] { new[] { Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND },
+                                          new[] { Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND },
+                                          new[] { Native.EVENT_SYSTEM_MOVESIZEEND, Native.EVENT_SYSTEM_MOVESIZEEND } })
+                hooks.Add(Native.SetWinEventHook(range[0], range[1], IntPtr.Zero, hookProc, 0, 0,
+                    Native.WINEVENT_OUTOFCONTEXT | Native.WINEVENT_SKIPOWNPROCESS));
 
-            // YouTube Music may already be minimized when this starts.
-            IntPtr existing = YtWindow.Find();
-            if (existing != IntPtr.Zero && Native.IsIconic(existing)) BeginWatching(existing);
+            // YouTube Music may already be open (minimized or covered) when this starts. A few times a second
+            // the timer also catches changes no event reports, such as a window being maximized over it.
+            yt = YtWindow.Find();
+            Check();
+            timer.Start();
         }
 
         // "--preview": shows the player with sample data (no media access), to check the look.
@@ -1713,34 +1802,66 @@ namespace YTMusicMini
         void OnWinEvent(IntPtr h, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
         {
             if (idObject != 0 || idChild != 0) return;
-            if (evt == Native.EVENT_SYSTEM_MINIMIZESTART && YtWindow.Is(hwnd)) BeginWatching(hwnd);
-            else if (evt == Native.EVENT_SYSTEM_MINIMIZEEND && hwnd == yt) StopWatching();
+            // Minimizing always brings the player back, even if it was closed with × while covered.
+            if (evt == Native.EVENT_SYSTEM_MINIMIZESTART && YtWindow.Is(hwnd)) { BeginWatching(hwnd, "minimized"); return; }
+            if (evt == Native.EVENT_SYSTEM_FOREGROUND && hwnd != yt && !watching && YtWindow.Is(hwnd)) yt = hwnd;
+            // Check now, and once more a moment later in case the windows were still settling.
+            Check();
+            settle.Stop();
+            settle.Start();
         }
 
-        void BeginWatching(IntPtr hwnd)
+        // Shows the player while YouTube Music is minimized or (if that option is on) mostly hidden behind
+        // other windows, and hides it otherwise. Not while a game or full-screen video is in front, though.
+        void Check()
         {
-            if (hwnd != yt || !watching) Log.Write("YouTube Music minimized: '" + Native.Title(hwnd) + "'");
+            if (yt == IntPtr.Zero || !Native.IsWindow(yt))
+            {
+                yt = IntPtr.Zero;
+                if (watching) StopWatching();
+                return;
+            }
+            if (Native.IsIconic(yt))
+            {
+                if (!watching) BeginWatching(yt, "minimized");
+                return;
+            }
+            double covered = 0;
+            if (settings.ShowWhenCovered && Native.IsWindowVisible(yt) && !YtWindow.Cloaked(yt))
+            {
+                covered = YtWindow.CoveredFraction(yt);
+                if (covered >= CoverHide && Native.FullScreenAppRunning()) covered = 0;
+            }
+            if (!watching && covered >= CoverShow) BeginWatching(yt, "covered (" + Math.Round(covered * 100) + "%)");
+            else if (watching && covered < CoverHide)
+            {
+                Log.Write("YouTube Music visible again");
+                StopWatching();
+            }
+        }
+
+        void BeginWatching(IntPtr hwnd, string why)
+        {
+            if (hwnd != yt || !watching) Log.Write("YouTube Music " + why + ": '" + Native.Title(hwnd) + "'");
             yt = hwnd;
             watching = true;
             dismissed = false;
-            ticks = 0;
             missingSince = DateTime.MinValue;
-            timer.Start();
             Refresh();
         }
 
         void StopWatching()
         {
             watching = false;
-            timer.Stop();
             HidePlayer();
         }
 
         void Tick()
         {
-            if (!watching) return;
-            if (!Native.IsWindow(yt) || !Native.IsIconic(yt)) { StopWatching(); return; }
             ticks++;
+            if (yt == IntPtr.Zero && ticks % 12 == 0) yt = YtWindow.Find();
+            Check();
+            if (!watching) return;
             if (ticks % 4 == 0) Refresh();
             else if (win.IsVisible) RenderPosition();
         }
@@ -1883,7 +2004,8 @@ namespace YTMusicMini
             IntPtr h = yt != IntPtr.Zero && Native.IsWindow(yt) ? yt : YtWindow.Find();
             if (h != IntPtr.Zero)
             {
-                Native.ShowWindow(h, Native.SW_RESTORE);
+                // Only un-minimize: restoring a window that's just covered would also un-maximize it.
+                if (Native.IsIconic(h)) Native.ShowWindow(h, Native.SW_RESTORE);
                 Native.SetForegroundWindow(h);
             }
             else LaunchYt();
@@ -1914,6 +2036,15 @@ namespace YTMusicMini
             startupItem = new WinForms.ToolStripMenuItem("Start with Windows") { Checked = IsStartupEnabled() };
             startupItem.Click += delegate { SetStartup(!IsStartupEnabled()); startupItem.Checked = IsStartupEnabled(); };
             menu.Items.Add(startupItem);
+            coveredItem = new WinForms.ToolStripMenuItem("Show when YouTube Music is covered") { Checked = settings.ShowWhenCovered };
+            coveredItem.Click += delegate
+            {
+                settings.ShowWhenCovered = !settings.ShowWhenCovered;
+                coveredItem.Checked = settings.ShowWhenCovered;
+                settings.Save();
+                Check();
+            };
+            menu.Items.Add(coveredItem);
             menu.Items.Add(new WinForms.ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { Exit(); });
             tray.ContextMenuStrip = menu;
@@ -1941,7 +2072,7 @@ namespace YTMusicMini
 
         void Exit()
         {
-            if (hook != IntPtr.Zero) Native.UnhookWinEvent(hook);
+            foreach (IntPtr hook in hooks) if (hook != IntPtr.Zero) Native.UnhookWinEvent(hook);
             tray.Visible = false;
             tray.Dispose();
             Application.Current.Shutdown();
