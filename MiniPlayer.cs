@@ -34,8 +34,8 @@ using AsyncStatus = Windows.Foundation.AsyncStatus;
 [assembly: System.Reflection.AssemblyTitle("YT Music Mini")]
 [assembly: System.Reflection.AssemblyDescription("Floating mini player for the YouTube Music app")]
 [assembly: System.Reflection.AssemblyProduct("YT Music Mini")]
-[assembly: System.Reflection.AssemblyVersion("1.0.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.3.0")]
 
 namespace YTMusicMini
 {
