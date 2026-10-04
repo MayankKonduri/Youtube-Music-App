@@ -1,6 +1,7 @@
 # Renders the README images:
-#   docs/desktop.png      the player in the corner of a simulated Windows 11 desktop
-#   docs/mini-player.png  a close-up of the player
+#   docs/desktop.png         the player in the corner of a simulated Windows 11 desktop
+#   docs/mini-player.png     a close-up of the player
+#   docs/compact-player.png  a close-up of the compact player
 # The song is "Clair de Lune" by Claude Debussy (public domain), and the cover is an original moonlit
 # picture drawn here, not real album art. Run build.ps1 first so .\bin\YTMusicMini.exe exists.
 $ErrorActionPreference = 'Stop'
@@ -33,7 +34,8 @@ $bmp.Dispose()
 $song = @('--preview', '--title', '"Clair de Lune"', '--artist', '"Claude Debussy"', '--art', "`"$art`"", '--position', '1:47', '--duration', '5:02')
 $shots = @(
     @{ File = 'desktop.png';     Extra = @('--desktop') },
-    @{ File = 'mini-player.png'; Extra = @() }
+    @{ File = 'mini-player.png'; Extra = @() },
+    @{ File = 'compact-player.png'; Extra = @('--compact') }
 )
 foreach ($shot in $shots) {
     $out = Join-Path $PSScriptRoot $shot.File

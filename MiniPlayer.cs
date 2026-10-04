@@ -1688,6 +1688,7 @@ namespace YTMusicMini
             }
             win.ApplyTheme(Theme.For(hue, hue2), false);
             double fraction = Fraction(win.CurText.Text, win.DurText.Text);
+            if (o.Compact) win.SetCompact(true, false);
             if (o.SnapshotPath != null)
             {
                 if (o.Desktop) win.SnapshotDesktop(o.SnapshotPath, fraction);
@@ -1949,12 +1950,13 @@ namespace YTMusicMini
 
     // Sample data for "--preview": an optional hue right after the flag ("--preview 140" looks like a
     // green album), plus --hue2 <second hue>, --title, --artist, --art <image>, --position m:ss,
-    // --duration m:ss, --snapshot <file.png> and --desktop (snapshot on a simulated Windows desktop).
+    // --duration m:ss, --compact (the compact player), --snapshot <file.png> and --desktop (snapshot on
+    // a simulated Windows desktop).
     class PreviewOptions
     {
         public double? Hue, Hue2;
         public string Title, Artist, ArtPath, Position, Duration, SnapshotPath;
-        public bool Desktop;
+        public bool Desktop, Compact;
 
         public static PreviewOptions Parse(string[] args, int at)
         {
@@ -1969,6 +1971,7 @@ namespace YTMusicMini
             o.Duration = Value(args, "--duration");
             o.SnapshotPath = Value(args, "--snapshot");
             o.Desktop = Array.IndexOf(args, "--desktop") >= 0;
+            o.Compact = Array.IndexOf(args, "--compact") >= 0;
             string second = Value(args, "--hue2");
             if (second != null && double.TryParse(second, System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out h)) o.Hue2 = h;

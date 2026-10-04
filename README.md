@@ -9,8 +9,10 @@ it disappears. Works on Windows 10 and 11.
 </p>
 <p align="center">
   <img src="docs/mini-player.png" width="388" alt="Close-up of the mini player: moonlit artwork, Clair de Lune by Claude Debussy, previous, pause and next buttons, and a red time bar at 1:47 of 5:02">
+  &nbsp;&nbsp;
+  <img src="docs/compact-player.png" width="164" alt="Close-up of the compact player: the moonlit cover on top, with previous, pause and next buttons underneath">
 </p>
-<p align="center"><sub>Simulated desktop. "Clair de Lune" by Claude Debussy is in the public domain, and the moonlit artwork is an original drawing, not a real album cover.</sub></p>
+<p align="center"><sub>Full player and compact player (the − button switches; clicking the cover switches back). Simulated desktop. "Clair de Lune" by Claude Debussy is in the public domain, and the moonlit artwork is an original drawing, not a real album cover.</sub></p>
 
 The mini player shows:
 - the song's artwork, title and artist (long titles and artist names slide back and forth at a steady pace, setting off together)
@@ -62,7 +64,7 @@ To check the design without touching any media:
 .\docs\make-screenshot.ps1             # re-renders the two README images in docs\
 ```
 
-`--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss`, `--snapshot <file.png>` and `--desktop` (snapshot on a simulated Windows desktop).
+`--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss`, `--snapshot <file.png>`, `--desktop` (snapshot on a simulated Windows desktop) and `--compact` (the compact player).
 
 The background colors live in `Theme` (`BgLightness`, `Bg2Lightness`, `BgChroma`) and the edge and its motion in `MiniWindow` (`GradientEdge`, `GradientMovement`, `GradientSpeed`) in `MiniPlayer.cs`. `--preview` also takes `--hue2` to set the right-hand color.
 
@@ -74,7 +76,7 @@ The background colors live in `Theme` (`BgLightness`, `Bg2Lightness`, `BgChroma`
 | `build.ps1` | Compile, install and start |
 | `make-icon.ps1` | Draws `app.ico` (run automatically by the build) |
 | `app.manifest` | Tells Windows the app handles per-monitor display scaling |
-| `docs/make-screenshot.ps1` | Renders the README images (`docs/desktop.png`, `docs/mini-player.png`) |
+| `docs/make-screenshot.ps1` | Renders the README images (`docs/desktop.png`, `docs/mini-player.png`, `docs/compact-player.png`) |
 
 Settings and a small log are kept in `%LOCALAPPDATA%\YT Music Mini`.
 
