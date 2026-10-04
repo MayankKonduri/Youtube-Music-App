@@ -209,6 +209,24 @@ namespace YTMusicMini
     // Finds the main hue of the artwork, ignoring dark, washed-out and gray pixels.
     static class ArtColor
     {
+        // Album covers are solid; a browser's own icon (offered as a stand-in before the real cover
+        // loads) has see-through corners.
+        public static bool LooksLikeIcon(BitmapSource src)
+        {
+            try
+            {
+                double scale = 32.0 / Math.Max(src.PixelWidth, src.PixelHeight);
+                var small = new FormatConvertedBitmap(new TransformedBitmap(src, new ScaleTransform(scale, scale)), PixelFormats.Bgra32, null, 0);
+                int w = small.PixelWidth, h = small.PixelHeight;
+                var px = new byte[w * h * 4];
+                small.CopyPixels(px, w * 4, 0);
+                int clear = 0;
+                for (int i = 3; i < px.Length; i += 4) if (px[i] < 200) clear++;
+                return clear > 0.05 * w * h;
+            }
+            catch { return false; }
+        }
+
         public static double? DominantHue(BitmapSource src)
         {
             try
@@ -390,7 +408,6 @@ namespace YTMusicMini
     {
         GlobalSystemMediaTransportControlsSessionManager manager;
         GlobalSystemMediaTransportControlsSession session;
-        string artKey = "";
         // YouTube Music's media-session id once identified (saved in settings, so it's known even when
         // a paused song leaves the window title as just "YouTube Music").
         public string AppId = "";
@@ -408,7 +425,7 @@ namespace YTMusicMini
         public async Task Init()
         {
             manager = await WinRt.Run(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
-            onProps = delegate { RaiseChanged(); };
+            onProps = delegate { propsDirty = true; RaiseChanged(); };
             onPlayback = delegate { RaiseChanged(); };
             onTimeline = delegate { RaiseChanged(); };
             try
@@ -523,48 +540,75 @@ namespace YTMusicMini
             Duration = tl.EndTime - tl.StartTime;
             UpdatedAt = tl.LastUpdatedTime;
 
+            // Artwork. Right after a song change the browser may still offer the previous song's picture,
+            // or its own icon as a stand-in until the real cover loads. So for a while after each change
+            // (and whenever the song info is updated) re-read it, and only accept real, solid artwork.
             string key = Title + "\n" + Artist;
-            if (key != artKey)
+            if (key != songKey) { songKey = key; songChangedAt = DateTime.Now; }
+            bool recheck = propsDirty || DateTime.Now - songChangedAt < TimeSpan.FromSeconds(20);
+            propsDirty = false;
+            if (recheck)
             {
+                byte[] bytes = null;
                 if (bestProps.Thumbnail != null)
                 {
-                    try
-                    {
-                        var stream = await WinRt.Run(bestProps.Thumbnail.OpenReadAsync());
-                        var reader = new DataReader(stream);
-                        uint n = await WinRt.Run<uint>(reader.LoadAsync((uint)stream.Size));
-                        var bytes = new byte[n];
-                        reader.ReadBytes(bytes);
-                        // Right after a song change the browser can still be offering the previous song's
-                        // artwork; keep checking a few times before accepting identical artwork.
-                        if (artBytes != null && SameBytes(bytes, artBytes) && ++artRetries < 6) return true;
-                        artRetries = 0;
-                        artBytes = bytes;
-                        var bmp = new BitmapImage();
-                        bmp.BeginInit();
-                        bmp.CacheOption = BitmapCacheOption.OnLoad;
-                        bmp.StreamSource = new MemoryStream(bytes);
-                        bmp.DecodePixelHeight = 240;
-                        bmp.EndInit();
-                        bmp.Freeze();
-                        Art = bmp;
-                        Hue = ArtColor.DominantHue(bmp);
-                        artKey = key;
-                        ArtVersion++;
-                    }
+                    try { bytes = await ReadAll(bestProps.Thumbnail); }
                     catch (Exception ex) { Log.Write("Artwork failed: " + ex.Message); }
                 }
-                else if (Art != null)
+                bool same = bytes != null && artBytes != null && SameBytes(bytes, artBytes);
+                if (bytes != null && !same)
                 {
-                    Art = null;
-                    ArtVersion++;
+                    BitmapImage bmp = Decode(bytes);
+                    if (bmp != null && !ArtColor.LooksLikeIcon(bmp))
+                    {
+                        artBytes = bytes;
+                        Art = bmp;
+                        Hue = ArtColor.DominantHue(bmp);
+                        artSongKey = key;
+                        ArtVersion++;
+                    }
+                }
+                if (artSongKey != key && DateTime.Now - songChangedAt > TimeSpan.FromSeconds(3))
+                {
+                    // Still the same picture a few seconds in: same album, same cover. Otherwise there's no
+                    // real artwork yet, so show the music-note placeholder rather than the last song's cover.
+                    if (same) artSongKey = key;
+                    else if (Art != null) { Art = null; artBytes = null; ArtVersion++; }
                 }
             }
             return true;
         }
 
+        string songKey = "", artSongKey = "";
+        DateTime songChangedAt = DateTime.MinValue;
+        volatile bool propsDirty;
         byte[] artBytes;
-        int artRetries;
+
+        static async Task<byte[]> ReadAll(IRandomAccessStreamReference source)
+        {
+            var stream = await WinRt.Run(source.OpenReadAsync());
+            var reader = new DataReader(stream);
+            uint n = await WinRt.Run<uint>(reader.LoadAsync((uint)stream.Size));
+            var bytes = new byte[n];
+            reader.ReadBytes(bytes);
+            return bytes;
+        }
+
+        static BitmapImage Decode(byte[] bytes)
+        {
+            try
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.StreamSource = new MemoryStream(bytes);
+                bmp.DecodePixelHeight = 240;
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            }
+            catch { return null; }
+        }
 
         static bool SameBytes(byte[] a, byte[] b)
         {
