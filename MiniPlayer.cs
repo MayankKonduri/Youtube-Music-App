@@ -743,24 +743,28 @@ namespace YTMusicMini
       </Setter>
     </Style>
   </Border.Resources>
-  <Grid>
+  <Grid x:Name='MainGrid'>
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width='70'/>
       <ColumnDefinition Width='10'/>
       <ColumnDefinition Width='*'/>
     </Grid.ColumnDefinitions>
+    <Grid.RowDefinitions>
+      <RowDefinition Height='*'/>
+      <RowDefinition Height='Auto'/>
+    </Grid.RowDefinitions>
     <Grid x:Name='ArtHost' Width='70' Height='70' Cursor='Hand' ToolTip='Open YouTube Music' RenderOptions.BitmapScalingMode='HighQuality'>
       <Border x:Name='ArtBack' CornerRadius='6'/>
       <Border x:Name='ArtFront' CornerRadius='6'/>
       <TextBlock x:Name='ArtGlyph' Text='&#xE8D6;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='24' TextOptions.TextRenderingMode='Grayscale'
                  HorizontalAlignment='Center' VerticalAlignment='Center'/>
     </Grid>
-    <Grid Grid.Column='2'>
+    <Grid x:Name='RightColumn' Grid.Column='2'>
       <Grid.RowDefinitions>
         <RowDefinition Height='Auto'/>
         <RowDefinition Height='*'/>
       </Grid.RowDefinitions>
-      <Grid>
+      <Grid x:Name='InfoRow'>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='Auto'/>
@@ -776,11 +780,12 @@ namespace YTMusicMini
           </Canvas>
         </StackPanel>
         <StackPanel Grid.Column='1' Orientation='Horizontal' VerticalAlignment='Top' Margin='0,-4,-4,0'>
+          <Button x:Name='CompactBtn' Style='{StaticResource Small}' Content='&#xE921;' ToolTip='Make smaller (click the cover to bring it back)'/>
           <Button x:Name='RestoreBtn' Style='{StaticResource Small}' Content='&#xE8A7;' ToolTip='Open YouTube Music'/>
           <Button x:Name='CloseBtn' Style='{StaticResource Small}' Content='&#xE711;' ToolTip='Hide until the next minimize'/>
         </StackPanel>
       </Grid>
-      <Grid Grid.Row='1' VerticalAlignment='Bottom'>
+      <Grid x:Name='ControlsRow' Grid.Row='1' VerticalAlignment='Bottom'>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width='Auto'/>
           <ColumnDefinition Width='Auto'/>
@@ -806,16 +811,19 @@ namespace YTMusicMini
 </Border>";
 
         public Border ArtBack, ArtFront, Fill, Track;
-        public Grid ArtHost, Seek;
+        public Grid ArtHost, Seek, InfoRow, ControlsRow, MainGrid, RightColumn;
         public Canvas TitleBox, ArtistBox;
         public Rectangle TitleFade, ArtistFade;
         public TextBlock ArtGlyph, TitleText, ArtistText, CurText, DurText;
-        public Button PlayBtn, PrevBtn, NextBtn, RestoreBtn, CloseBtn;
+        public Button PlayBtn, PrevBtn, NextBtn, CompactBtn, RestoreBtn, CloseBtn;
         public Ellipse Knob;
         public bool Dragging, Hiding;
         public double DragFraction;
         public event Action<double> SeekRequested;
         public event Action DragFinished;
+        // Raised after the player switches between full and compact size.
+        public event Action Resized;
+        public bool Compact;
 
         readonly Border root;
         Brush placeholder = Brushes.Transparent;
@@ -838,8 +846,8 @@ namespace YTMusicMini
         public MiniWindow()
         {
             Title = "YT Music Mini";
-            Width = 340;
-            Height = 90;
+            Width = FullWidth;
+            Height = FullHeight;
             // A transparent window that draws its own rounded card, so the player can fade in and out.
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
@@ -867,6 +875,11 @@ namespace YTMusicMini
             NextBtn = (Button)root.FindName("NextBtn");
             RestoreBtn = (Button)root.FindName("RestoreBtn");
             CloseBtn = (Button)root.FindName("CloseBtn");
+            CompactBtn = (Button)root.FindName("CompactBtn");
+            InfoRow = (Grid)root.FindName("InfoRow");
+            ControlsRow = (Grid)root.FindName("ControlsRow");
+            MainGrid = (Grid)root.FindName("MainGrid");
+            RightColumn = (Grid)root.FindName("RightColumn");
             Seek = (Grid)root.FindName("Seek");
             Fill = (Border)root.FindName("Fill");
             Track = (Border)root.FindName("Track");
@@ -1019,6 +1032,97 @@ namespace YTMusicMini
                 StopMarquees();
                 gradientTimer.Stop();
             });
+        }
+
+        // Full size: cover on the left, song info, controls and time bar on the right.
+        // Compact: just the cover on top and previous / play-pause / next underneath.
+        public const double FullWidth = 340, FullHeight = 90, FullArt = 70;
+        public const double CompactArt = 96, CompactWidth = CompactArt + 20, CompactHeight = CompactArt + 20 + 38;
+
+        void ApplyLayout(bool compact)
+        {
+            var details = compact ? Visibility.Collapsed : Visibility.Visible;
+            RightColumn.Visibility = details;
+            CurText.Visibility = details;
+            Seek.Visibility = details;
+            DurText.Visibility = details;
+            double art = compact ? CompactArt : FullArt;
+            ArtHost.Width = art;
+            ArtHost.Height = art;
+            MainGrid.ColumnDefinitions[0].Width = new GridLength(art);
+            MainGrid.ColumnDefinitions[1].Width = new GridLength(compact ? 0 : 10);
+            MainGrid.ColumnDefinitions[2].Width = compact ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            // The controls move under the cover in compact mode, and back next to it in full mode.
+            ((Panel)ControlsRow.Parent).Children.Remove(ControlsRow);
+            if (compact)
+            {
+                MainGrid.Children.Add(ControlsRow);
+                Grid.SetRow(ControlsRow, 1);
+                Grid.SetColumn(ControlsRow, 0);
+                Grid.SetColumnSpan(ControlsRow, 3);
+                ControlsRow.HorizontalAlignment = HorizontalAlignment.Center;
+                ControlsRow.Margin = new Thickness(0, 8, 0, 0);
+            }
+            else
+            {
+                RightColumn.Children.Add(ControlsRow);
+                Grid.SetRow(ControlsRow, 1);
+                Grid.SetColumn(ControlsRow, 0);
+                Grid.SetColumnSpan(ControlsRow, 1);
+                ControlsRow.HorizontalAlignment = HorizontalAlignment.Stretch;
+                ControlsRow.Margin = new Thickness(0);
+            }
+            ArtHost.ToolTip = compact ? "Show the full player" : "Open YouTube Music";
+            Width = compact ? CompactWidth : FullWidth;
+            Height = compact ? CompactHeight : FullHeight;
+        }
+
+        public void SetCompact(bool compact, bool animate)
+        {
+            if (compact == Compact && Width == (compact ? CompactWidth : FullWidth)) return;
+            Compact = compact;
+            if (compact) StopMarquees();
+            if (!IsVisible || !animate)
+            {
+                ApplyLayout(compact);
+                if (!compact) RefreshMarquees();
+                return;
+            }
+            // Fade out, switch layout, and fade back in. Expanding returns to exactly where the full player
+            // was before it shrank (unless the compact one has been moved since). Otherwise the side nearest
+            // the screen's edges stays put, so a player in a bottom corner stays in that corner.
+            var r = PixelRect();
+            var wa = WinForms.Screen.FromHandle(hwnd).WorkingArea;
+            bool keepRight = (r.Left + r.Right) / 2 > (wa.Left + wa.Right) / 2;
+            bool keepBottom = (r.Top + r.Bottom) / 2 > (wa.Top + wa.Bottom) / 2;
+            FadeTo(0, 110, delegate
+            {
+                ApplyLayout(compact);
+                // The new size in screen pixels (Windows can report the old size for a moment).
+                double s = Scale;
+                int w = (int)Math.Round(Width * s), h = (int)Math.Round(Height * s);
+                int x = keepRight ? r.Right - w : r.Left, y = keepBottom ? r.Bottom - h : r.Top;
+                if (!compact && hasFullSpot && Near(r, compactSpot)) { x = fullSpot.Left; y = fullSpot.Top; }
+                Native.SetWindowPos(hwnd, IntPtr.Zero, x, y, w, h, Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+                if (compact)
+                {
+                    fullSpot = r;
+                    compactSpot = new Native.RECT { Left = x, Top = y, Right = x + w, Bottom = y + h };
+                    hasFullSpot = true;
+                }
+                if (!compact) RefreshMarquees();
+                FadeTo(1, 160, null);
+                if (Resized != null) Resized();
+            });
+        }
+
+        // Where the full player was before it shrank, and where the compact one was put.
+        Native.RECT fullSpot, compactSpot;
+        bool hasFullSpot;
+
+        static bool Near(Native.RECT a, Native.RECT b)
+        {
+            return Math.Abs(a.Left - b.Left) <= 2 && Math.Abs(a.Top - b.Top) <= 2;
         }
 
         public void GlideTo(double x, double y, Action done)
@@ -1419,7 +1523,7 @@ namespace YTMusicMini
         public double X = double.NaN, Y = double.NaN;
         public string Snap = "";
         public string AppId = "";
-        public bool StartupConfigured;
+        public bool StartupConfigured, Compact;
 
         public static Settings Load()
         {
@@ -1437,6 +1541,7 @@ namespace YTMusicMini
                     if (k == "y" && double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) s.Y = d;
                     if (k == "snap") s.Snap = v;
                     if (k == "appId") s.AppId = v;
+                    if (k == "compact") s.Compact = v == "1";
                     if (k == "startupConfigured") s.StartupConfigured = v == "1";
                 }
             }
@@ -1455,6 +1560,7 @@ namespace YTMusicMini
                     "y=" + (double.IsNaN(Y) ? "" : Y.ToString(ci)) + "\r\n" +
                     "snap=" + Snap + "\r\n" +
                     "appId=" + AppId + "\r\n" +
+                    "compact=" + (Compact ? "1" : "0") + "\r\n" +
                     "startupConfigured=" + (StartupConfigured ? "1" : "0") + "\r\n");
             }
             catch { }
@@ -1499,7 +1605,23 @@ namespace YTMusicMini
             win.RestoreBtn.Click += delegate { RestoreYt(); };
             win.CloseBtn.Click += delegate { dismissed = true; HidePlayer(); };
             win.ArtHost.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
-            win.ArtHost.MouseLeftButtonUp += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; RestoreYt(); };
+            // The cover opens YouTube Music; in the compact player it brings back the full player instead.
+            win.ArtHost.MouseLeftButtonUp += delegate(object s, MouseButtonEventArgs e)
+            {
+                e.Handled = true;
+                if (win.Compact) win.SetCompact(false, true);
+                else RestoreYt();
+            };
+            win.CompactBtn.Click += delegate { win.SetCompact(true, true); };
+            win.Resized += delegate
+            {
+                var r = win.PixelRect();
+                settings.X = r.Left;
+                settings.Y = r.Top;
+                settings.Compact = win.Compact;
+                settings.Save();
+            };
+            win.SetCompact(settings.Compact, false);
             win.SeekRequested += async delegate(double f)
             {
                 if (media.Duration > TimeSpan.Zero) await media.SeekTo(TimeSpan.FromTicks((long)(media.Duration.Ticks * f)));
