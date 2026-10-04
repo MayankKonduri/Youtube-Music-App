@@ -1,9 +1,12 @@
 # Renders the README images:
+#   docs/demo.gif            looping demo: YouTube Music gets covered by another window and the player
+#                            slides in, then YouTube Music comes back to the front and it slides away
 #   docs/desktop.png         the player in the corner of a simulated Windows 11 desktop
 #   docs/mini-player.png     a close-up of the player
 #   docs/compact-player.png  a close-up of the compact player
 # The song is "Clair de Lune" by Claude Debussy (public domain), and the cover is an original moonlit
 # picture drawn here, not real album art. Run build.ps1 first so .\bin\YTMusicMini.exe exists.
+# The GIF needs ffmpeg on the PATH; without it, that one is skipped.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $root = Split-Path $PSScriptRoot -Parent
@@ -44,4 +47,21 @@ foreach ($shot in $shots) {
     if (-not (Test-Path $out)) { throw "Snapshot was not written: $out" }
     "Wrote $out"
 }
+
+# The demo: the app draws it as PNG frames (25 per second), and ffmpeg turns them into a looping GIF
+# with one shared palette and steady (ordered) dithering, so the moving colors don't shimmer.
+if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+    $frames = Join-Path $env:TEMP 'ytmini-demo-frames'
+    if (Test-Path $frames) { Remove-Item $frames -Recurse }
+    Start-Process $exe -Wait -ArgumentList ($song + @('--demo', "`"$frames`""))
+    $pattern = Join-Path $frames 'frame%03d.png'
+    $palette = Join-Path $frames 'palette.png'
+    $gif = Join-Path $PSScriptRoot 'demo.gif'
+    & ffmpeg -v error -y -framerate 25 -i $pattern -vf 'palettegen=stats_mode=full' $palette
+    & ffmpeg -v error -y -framerate 25 -i $pattern -i $palette -lavfi 'paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle' -loop 0 $gif
+    Remove-Item $frames -Recurse
+    if (-not (Test-Path $gif)) { throw "GIF was not written: $gif" }
+    "Wrote $gif"
+}
+else { Write-Warning 'ffmpeg is not on the PATH, so docs/demo.gif was not made.' }
 Remove-Item $art

@@ -1346,12 +1346,26 @@ namespace YTMusicMini
             Render(stage, path, 2, fraction);
         }
 
-        // Draws the player in the corner of a simulated Windows 11 desktop (original wallpaper, generic
-        // taskbar icons, this app's own tray icon), for the README.
+        // The simulated desktop for the README images, in DIPs: its size, the taskbar height and the
+        // player's gap from the screen edges.
+        const double DeskW = 1280, DeskH = 720, DeskBar = 48, DeskGap = 14;
+
+        // Draws the player in the corner of a simulated Windows 11 desktop, for the README.
         public void SnapshotDesktop(string path, double fraction)
         {
-            const double W = 1280, H = 720, bar = 48, gap = 14;
-            var stage = new Grid { Width = W, Height = H, ClipToBounds = true };
+            Border musicDot, notesDot;
+            var stage = Desktop(false, out musicDot, out notesDot);
+            stage.Children.Add(DetachWithShadow(DeskW - DeskGap - Width, DeskH - DeskBar - DeskGap - Height));
+            Render(stage, path, 1.5, fraction);
+        }
+
+        // A simulated Windows 11 desktop: original wallpaper, generic taskbar icons and this app's own tray
+        // icon. With notes, a notes app is open too. The music and notes apps' taskbar indicators are
+        // handed back, so the demo can light up whichever is in front.
+        Grid Desktop(bool notes, out Border musicDot, out Border notesDot)
+        {
+            const double bar = DeskBar;
+            var stage = new Grid { Width = DeskW, Height = DeskH, ClipToBounds = true };
 
             var wall = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
             wall.GradientStops.Add(new GradientStop(Color.FromRgb(0x17, 0x1E, 0x4A), 0));
@@ -1373,7 +1387,9 @@ namespace YTMusicMini
             apps.Children.Add(TaskbarIcon("", Color.FromRgb(0xF7, 0xC9, 0x48), null, false));
             apps.Children.Add(TaskbarIcon("", Color.FromRgb(0x4F, 0xA3, 0xF7), null, false));
             apps.Children.Add(TaskbarIcon("", Color.FromRgb(0x5A, 0xB0, 0xF2), null, false));
-            apps.Children.Add(TaskbarIcon("", Colors.White, Color.FromRgb(0xE5, 0x2D, 0x3A), true));   // the minimized music app
+            notesDot = null;
+            if (notes) apps.Children.Add(TaskbarIcon("", Color.FromRgb(0x7F, 0xC8, 0xF8), null, true, out notesDot));
+            apps.Children.Add(TaskbarIcon("", Colors.White, Color.FromRgb(0xE5, 0x2D, 0x3A), true, out musicDot));   // the music app
             apps.Children.Add(TaskbarIcon("", Color.FromRgb(0xC8, 0xC8, 0xC8), null, false));
             taskbar.Children.Add(apps);
             var tray = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 14, 0) };
@@ -1395,9 +1411,7 @@ namespace YTMusicMini
             tray.Children.Add(clock);
             taskbar.Children.Add(tray);
             stage.Children.Add(taskbar);
-
-            stage.Children.Add(DetachWithShadow(W - gap - Width, H - bar - gap - Height));
-            Render(stage, path, 1.5, fraction);
+            return stage;
         }
 
         // Takes the player out of this window and puts it, with a soft shadow, at (x, y) on a layer.
@@ -1439,6 +1453,278 @@ namespace YTMusicMini
             using (var file = File.Create(path)) png.Save(file);
         }
 
+        // The README demo, written to a folder as numbered PNG frames (frame000.png, ...) at DemoFps. On a
+        // simulated desktop, YouTube Music is playing; a click on a notes window brings it to the front over
+        // YouTube Music and the player slides in; a click back on YouTube Music sends the player away. The
+        // pointer ends where it started, so it loops smoothly.
+        public const double DemoFps = 25;
+        const double DemoLength = 6.4, MusicBarWidth = 300;
+
+        public void RenderDemo(string folder, TimeSpan position, TimeSpan duration)
+        {
+            Border musicDot, notesDot;
+            var stage = Desktop(true, out musicDot, out notesDot);
+
+            // YouTube Music starts in front, with the notes window sticking out on its right. In front, the
+            // notes window covers about 60% of YouTube Music.
+            TextBlock musicCaption, notesCaption, musicTime;
+            Border musicFill;
+            var music = MusicWindow(duration, out musicCaption, out musicTime, out musicFill);
+            var notes = NotesWindow(out notesCaption);
+            var windows = new Canvas();
+            foreach (var w in new[] { new { E = music, X = 110.0, Y = 64.0 }, new { E = notes, X = 330.0, Y = 100.0 } })
+            {
+                Canvas.SetLeft(w.E, w.X);
+                Canvas.SetTop(w.E, w.Y);
+                windows.Children.Add(w.E);
+            }
+            stage.Children.Add(windows);
+
+            // The player in its usual bottom-right spot, then the mouse pointer and a ring that marks clicks.
+            var player = DetachWithShadow(DeskW - DeskGap - Width, DeskH - DeskBar - DeskGap - Height);
+            var slide = new TranslateTransform();
+            player.RenderTransform = slide;
+            stage.Children.Add(player);
+            var overlay = new Canvas();
+            var ring = new System.Windows.Shapes.Ellipse { Stroke = B(Color.FromRgb(0x3A, 0x9B, 0xFF)), StrokeThickness = 2.5 };
+            var pointer = Pointer();
+            overlay.Children.Add(ring);
+            overlay.Children.Add(pointer);
+            stage.Children.Add(overlay);
+
+            // The pointer goes from YouTube Music to the notes window (click), over to the part of YouTube
+            // Music still showing (click), and back to where it started.
+            Point start = new Point(560, 430), onNotes = new Point(930, 330), onMusic = new Point(215, 300);
+            const double click1 = 1.4, click2 = 4.15, reaction = 0.05;
+
+            stage.Measure(new Size(DeskW, DeskH));
+            stage.Arrange(new Rect(0, 0, DeskW, DeskH));
+            Directory.CreateDirectory(folder);
+            int frames = (int)Math.Round(DemoLength * DemoFps);
+            for (int i = 0; i < frames; i++)
+            {
+                double t = i / DemoFps;
+                bool notesFront = t >= click1 && t < click2;
+                Panel.SetZIndex(notes, notesFront ? 1 : 0);
+                Panel.SetZIndex(music, notesFront ? 0 : 1);
+                musicCaption.Opacity = notesFront ? 0.5 : 1;
+                notesCaption.Opacity = notesFront ? 1 : 0.5;
+                SetTaskbarDot(musicDot, !notesFront);
+                SetTaskbarDot(notesDot, notesFront);
+
+                Point p = t < 0.5 ? start : t < 1.3 ? Glide(start, onNotes, (t - 0.5) / 0.8)
+                        : t < 3.2 ? onNotes : t < 4.0 ? Glide(onNotes, onMusic, (t - 3.2) / 0.8)
+                        : t < 5.0 ? onMusic : t < 5.8 ? Glide(onMusic, start, (t - 5.0) / 0.8) : start;
+                Canvas.SetLeft(pointer, p.X);
+                Canvas.SetTop(pointer, p.Y);
+                double since = t >= click2 ? t - click2 : t >= click1 ? t - click1 : -1;
+                bool ringOn = since >= 0 && since < 0.35;
+                ring.Visibility = ringOn ? Visibility.Visible : Visibility.Hidden;
+                if (ringOn)
+                {
+                    double r = 4 + 16 * EaseOut(since / 0.35);
+                    ring.Width = ring.Height = 2 * r;
+                    ring.Opacity = 0.9 * (1 - since / 0.35);
+                    Canvas.SetLeft(ring, p.X - r);
+                    Canvas.SetTop(ring, p.Y - r);
+                }
+
+                // The player, with the real timing: fades in over 230 ms while rising 14 px over 280 ms, and
+                // fades out over 170 ms while dropping 10 px.
+                double inAt = click1 + reaction, outAt = click2 + reaction, show = 0, offset = 0;
+                if (t >= inAt && t < outAt)
+                {
+                    show = EaseOut(Math.Min(1, (t - inAt) / 0.23));
+                    offset = 14 * (1 - EaseOut(Math.Min(1, (t - inAt) / 0.28)));
+                }
+                else if (t >= outAt && t < outAt + 0.17)
+                {
+                    double q = EaseOut((t - outAt) / 0.17);
+                    show = 1 - q;
+                    offset = 10 * q;
+                }
+                player.Opacity = show;
+                player.Visibility = show > 0 ? Visibility.Visible : Visibility.Hidden;
+                slide.Y = offset;
+
+                // The song plays on, in both YouTube Music and the player.
+                TimeSpan now = position + TimeSpan.FromSeconds(t);
+                double f = duration.Ticks > 0 ? Math.Min(1, (double)now.Ticks / duration.Ticks) : 0;
+                CurText.Text = musicTime.Text = MinSec(now);
+                musicFill.Width = MusicBarWidth * f;
+                stage.UpdateLayout();
+                ShowFraction(f);
+                UpdateGradient((t + 4) * GradientSpeed);
+                stage.UpdateLayout();
+
+                var image = new RenderTargetBitmap((int)DeskW, (int)DeskH, 96, 96, PixelFormats.Pbgra32);
+                image.Render(stage);
+                var png = new PngBitmapEncoder();
+                png.Frames.Add(BitmapFrame.Create(image));
+                using (var file = File.Create(System.IO.Path.Combine(folder, "frame" + i.ToString("000") + ".png"))) png.Save(file);
+            }
+        }
+
+        static double EaseOut(double p) { return 1 - Math.Pow(1 - p, 3); }
+
+        static Point Glide(Point a, Point b, double p)
+        {
+            p = p * p * (3 - 2 * p);
+            return new Point(a.X + (b.X - a.X) * p, a.Y + (b.Y - a.Y) * p);
+        }
+
+        static string MinSec(TimeSpan t) { return string.Format("{0}:{1:00}", (int)t.TotalMinutes, t.Seconds); }
+
+        static readonly FontFamily UiFont = new FontFamily("Segoe UI Variable Text, Segoe UI");
+
+        static TextBlock DemoText(string text, double size, Color color, FontWeight weight, Thickness margin)
+        {
+            return new TextBlock { Text = text, FontSize = size, Foreground = B(color), FontWeight = weight, Margin = margin, FontFamily = UiFont };
+        }
+
+        static TextBlock Glyph(string glyph, double size, Color color, double width)
+        {
+            return new TextBlock
+            {
+                Text = glyph, FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = size, Foreground = B(color),
+                Width = width, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            };
+        }
+
+        // A Windows 11 style window: rounded corners, a hairline border, a soft shadow, and a title bar with
+        // an icon, the caption (dimmed by the demo when the window isn't in front) and the window buttons.
+        static FrameworkElement AppWindow(double w, double h, bool dark, UIElement icon, string title, UIElement body, out TextBlock caption)
+        {
+            Color fg = dark ? Color.FromRgb(0xE6, 0xE6, 0xE6) : Color.FromRgb(0x1A, 0x1A, 0x1A);
+            var grid = new Grid { Clip = new RectangleGeometry(new Rect(0, 0, w - 2, h - 2), 7, 7) };
+            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
+            grid.RowDefinitions.Add(new RowDefinition());
+            var bar = new DockPanel { Background = B(dark ? Color.FromRgb(0x0B, 0x0B, 0x0B) : Color.FromRgb(0xF0, 0xF0, 0xF0)) };
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+            foreach (string g in new[] { "", "", "" }) buttons.Children.Add(Glyph(g, 10, fg, 46));
+            DockPanel.SetDock(buttons, Dock.Right);
+            bar.Children.Add(buttons);
+            var iconHost = new Border { Margin = new Thickness(12, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center, Child = icon };
+            DockPanel.SetDock(iconHost, Dock.Left);
+            bar.Children.Add(iconHost);
+            caption = new TextBlock { Text = title, FontSize = 12, Foreground = B(fg), VerticalAlignment = VerticalAlignment.Center, FontFamily = UiFont };
+            bar.Children.Add(caption);
+            grid.Children.Add(bar);
+            Grid.SetRow(body, 1);
+            grid.Children.Add(body);
+            return new Border
+            {
+                Width = w, Height = h, CornerRadius = new CornerRadius(8), Child = grid,
+                Background = B(dark ? Color.FromRgb(0x14, 0x14, 0x14) : Color.FromRgb(0xFB, 0xFB, 0xFB)),
+                BorderBrush = B(dark ? Color.FromRgb(0x3A, 0x3A, 0x3A) : Color.FromRgb(0xD4, 0xD4, 0xD4)), BorderThickness = new Thickness(1),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 40, ShadowDepth = 12, Direction = 270, Opacity = 0.35, Color = Colors.Black }
+            };
+        }
+
+        // A generic dark music app window titled "YouTube Music", playing the preview song with a few
+        // public-domain pieces queued up. Not YouTube Music's own design: just enough to read as the music app.
+        FrameworkElement MusicWindow(TimeSpan duration, out TextBlock caption, out TextBlock timeText, out Border fill)
+        {
+            Color gray = Color.FromRgb(0x9A, 0x9A, 0x9A);
+            var body = new Grid { Margin = new Thickness(28, 20, 28, 20) };
+            body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(250) });
+            body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+            body.ColumnDefinitions.Add(new ColumnDefinition());
+            body.Children.Add(new Border
+            {
+                Width = 250, Height = 250, CornerRadius = new CornerRadius(6), VerticalAlignment = VerticalAlignment.Top,
+                Background = currentArt != null ? (Brush)new ImageBrush(currentArt) { Stretch = Stretch.UniformToFill } : B(Color.FromRgb(0x2A, 0x2A, 0x2A))
+            });
+
+            var info = new StackPanel();
+            Grid.SetColumn(info, 2);
+            info.Children.Add(DemoText("NOW PLAYING", 10.5, gray, FontWeights.SemiBold, new Thickness(0, 2, 0, 6)));
+            info.Children.Add(DemoText(TitleText.Text, 26, Colors.White, FontWeights.SemiBold, new Thickness(0)));
+            info.Children.Add(DemoText(ArtistText.Text, 15, Color.FromRgb(0xAA, 0xAA, 0xAA), FontWeights.Normal, new Thickness(0, 2, 0, 20)));
+            var bar = new Grid { Width = MusicBarWidth, Height = 4, HorizontalAlignment = HorizontalAlignment.Left };
+            bar.Children.Add(new Border { Background = B(Color.FromRgb(0x3A, 0x3A, 0x3A)), CornerRadius = new CornerRadius(2) });
+            fill = new Border { Background = B(Color.FromRgb(0xFF, 0x00, 0x33)), CornerRadius = new CornerRadius(2), HorizontalAlignment = HorizontalAlignment.Left };
+            bar.Children.Add(fill);
+            info.Children.Add(bar);
+            var times = new Grid { Width = MusicBarWidth, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 8) };
+            timeText = DemoText("", 11, gray, FontWeights.Normal, new Thickness(0));
+            times.Children.Add(timeText);
+            var total = DemoText(MinSec(duration), 11, gray, FontWeights.Normal, new Thickness(0));
+            total.HorizontalAlignment = HorizontalAlignment.Right;
+            times.Children.Add(total);
+            info.Children.Add(times);
+            var controls = new StackPanel { Orientation = Orientation.Horizontal };
+            controls.Children.Add(Glyph("", 16, Colors.White, 36));
+            controls.Children.Add(new Border
+            {
+                Width = 44, Height = 44, CornerRadius = new CornerRadius(22), Background = Brushes.White, Margin = new Thickness(10, 0, 10, 0),
+                Child = Glyph("", 16, Colors.Black, 44)
+            });
+            controls.Children.Add(Glyph("", 16, Colors.White, 36));
+            info.Children.Add(controls);
+            info.Children.Add(DemoText("UP NEXT", 10.5, gray, FontWeights.SemiBold, new Thickness(0, 20, 0, 8)));
+            info.Children.Add(QueueRow("Gymnopédie No. 1", "Erik Satie", Color.FromRgb(0x5E, 0x8C, 0x74)));
+            info.Children.Add(QueueRow("Rêverie", "Claude Debussy", Color.FromRgb(0x8A, 0x6D, 0xB0)));
+            info.Children.Add(QueueRow("Arabesque No. 1", "Claude Debussy", Color.FromRgb(0xB8, 0x84, 0x52)));
+            body.Children.Add(info);
+
+            var icon = new Border { Width = 16, Height = 16, CornerRadius = new CornerRadius(8), Background = B(Color.FromRgb(0xE5, 0x2D, 0x3A)), Child = Glyph("", 7, Colors.White, 16) };
+            return AppWindow(660, 440, true, icon, "YouTube Music", body, out caption);
+        }
+
+        static FrameworkElement QueueRow(string title, string artist, Color color)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+            row.Children.Add(new Border
+            {
+                Width = 30, Height = 30, CornerRadius = new CornerRadius(4), Margin = new Thickness(0, 0, 12, 0),
+                Background = new LinearGradientBrush(color, Theme.Mix(color, Colors.Black, 0.45), 45)
+            });
+            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            text.Children.Add(DemoText(title, 12.5, Color.FromRgb(0xE6, 0xE6, 0xE6), FontWeights.Normal, new Thickness(0)));
+            text.Children.Add(DemoText(artist, 11, Color.FromRgb(0x9A, 0x9A, 0x9A), FontWeights.Normal, new Thickness(0)));
+            row.Children.Add(text);
+            return row;
+        }
+
+        // A plain light notes window with a short lab write-up in it.
+        static FrameworkElement NotesWindow(out TextBlock caption)
+        {
+            var body = new StackPanel();
+            var menu = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 4, 0, 8) };
+            foreach (string m in new[] { "File", "Edit", "View" }) menu.Children.Add(DemoText(m, 12, Color.FromRgb(0x33, 0x33, 0x33), FontWeights.Normal, new Thickness(0, 0, 18, 0)));
+            body.Children.Add(menu);
+            body.Children.Add(new Border { Height = 1, Background = B(Color.FromRgb(0xE3, 0xE3, 0xE3)) });
+            var text = new StackPanel { Margin = new Thickness(24, 18, 24, 0) };
+            text.Children.Add(DemoText("Lab 3: Pendulum timing", 18, Color.FromRgb(0x1A, 0x1A, 0x1A), FontWeights.SemiBold, new Thickness(0, 0, 0, 12)));
+            foreach (string para in new[]
+            {
+                "Goal: check how the period of a simple pendulum changes with its length.",
+                "Setup: a 50 g bob on a light string, released from 10°. Lengths of 0.25, 0.50, 0.75 and 1.00 m, timing ten swings at each.",
+                "Results so far: the period grows with the square root of the length, as expected. At 1.00 m, ten swings took 20.1 s, so T ≈ 2.01 s.",
+                "Next: redo the 0.25 m runs, add error bars, and write up the discussion."
+            })
+            {
+                var p = DemoText(para, 14, Color.FromRgb(0x2B, 0x2B, 0x2B), FontWeights.Normal, new Thickness(0, 0, 0, 12));
+                p.TextWrapping = TextWrapping.Wrap;
+                p.LineHeight = 21;
+                text.Children.Add(p);
+            }
+            body.Children.Add(text);
+            return AppWindow(700, 470, false, Glyph("", 14, Color.FromRgb(0x2B, 0x88, 0xD8), 16), "lab report.txt - Notes", body, out caption);
+        }
+
+        // The standard arrow pointer, tip at (0, 0).
+        static FrameworkElement Pointer()
+        {
+            return new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M0,0 L0,17.5 L4.3,13.4 L7.2,20 L10,18.8 L7.2,12.4 L13,12.4 Z"),
+                Fill = Brushes.White, Stroke = Brushes.Black, StrokeThickness = 1, StrokeLineJoin = PenLineJoin.Round,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 4, ShadowDepth = 1.5, Direction = 300, Opacity = 0.4, Color = Colors.Black }
+            };
+        }
+
         static void AddGlow(Canvas c, double cx, double cy, double r, Color color)
         {
             var glow = new System.Windows.Shapes.Ellipse { Width = 2 * r, Height = 2 * r, Fill = new RadialGradientBrush(color, Color.FromArgb(0, color.R, color.G, color.B)) };
@@ -1449,6 +1735,14 @@ namespace YTMusicMini
 
         static FrameworkElement TaskbarIcon(string glyph, Color color, Color? circle, bool running)
         {
+            Border dot;
+            return TaskbarIcon(glyph, color, circle, running, out dot);
+        }
+
+        // A taskbar button; dot is its "running" indicator (null if not running).
+        static FrameworkElement TaskbarIcon(string glyph, Color color, Color? circle, bool running, out Border dot)
+        {
+            dot = null;
             var cell = new Grid { Width = 44, Height = 40, Margin = new Thickness(2, 0, 2, 0) };
             var icon = new TextBlock
             {
@@ -1460,8 +1754,19 @@ namespace YTMusicMini
             else
                 cell.Children.Add(icon);
             if (running)
-                cell.Children.Add(new Border { Width = 6, Height = 3, CornerRadius = new CornerRadius(1.5), Background = B(Color.FromRgb(0x9A, 0x9A, 0x9A)), VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) });
+            {
+                dot = new Border { Height = 3, CornerRadius = new CornerRadius(1.5), VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) };
+                SetTaskbarDot(dot, false);
+                cell.Children.Add(dot);
+            }
             return cell;
+        }
+
+        // A running app gets a short gray mark under its taskbar button; the app in front, a longer blue one.
+        static void SetTaskbarDot(Border dot, bool front)
+        {
+            dot.Width = front ? 16 : 6;
+            dot.Background = B(front ? Color.FromRgb(0x4C, 0xC2, 0xFF) : Color.FromRgb(0x9A, 0x9A, 0x9A));
         }
 
         static FrameworkElement TrayGlyph(string glyph)
@@ -1777,6 +2082,15 @@ namespace YTMusicMini
             }
             win.ApplyTheme(Theme.For(hue, hue2), false);
             double fraction = Fraction(win.CurText.Text, win.DurText.Text);
+            if (o.DemoFolder != null)
+            {
+                TimeSpan position, duration;
+                if (!TimeSpan.TryParseExact(win.CurText.Text, @"m\:ss", null, out position)) position = TimeSpan.FromSeconds(92);
+                if (!TimeSpan.TryParseExact(win.DurText.Text, @"m\:ss", null, out duration)) duration = TimeSpan.FromSeconds(228);
+                win.RenderDemo(o.DemoFolder, position, duration);
+                Application.Current.Shutdown();
+                return;
+            }
             if (o.Compact) win.SetCompact(true, false);
             if (o.SnapshotPath != null)
             {
@@ -2081,12 +2395,12 @@ namespace YTMusicMini
 
     // Sample data for "--preview": an optional hue right after the flag ("--preview 140" looks like a
     // green album), plus --hue2 <second hue>, --title, --artist, --art <image>, --position m:ss,
-    // --duration m:ss, --compact (the compact player), --snapshot <file.png> and --desktop (snapshot on
-    // a simulated Windows desktop).
+    // --duration m:ss, --compact (the compact player), --snapshot <file.png>, --desktop (snapshot on
+    // a simulated Windows desktop) and --demo <folder> (the README's animated demo, as PNG frames).
     class PreviewOptions
     {
         public double? Hue, Hue2;
-        public string Title, Artist, ArtPath, Position, Duration, SnapshotPath;
+        public string Title, Artist, ArtPath, Position, Duration, SnapshotPath, DemoFolder;
         public bool Desktop, Compact;
 
         public static PreviewOptions Parse(string[] args, int at)
@@ -2101,6 +2415,7 @@ namespace YTMusicMini
             o.Position = Value(args, "--position");
             o.Duration = Value(args, "--duration");
             o.SnapshotPath = Value(args, "--snapshot");
+            o.DemoFolder = Value(args, "--demo");
             o.Desktop = Array.IndexOf(args, "--desktop") >= 0;
             o.Compact = Array.IndexOf(args, "--compact") >= 0;
             string second = Value(args, "--hue2");

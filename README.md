@@ -5,14 +5,15 @@ or click another window that covers most of it, a small always-on-top player app
 the screen; when YouTube Music is back in view, it disappears. Works on Windows 10 and 11.
 
 <p align="center">
-  <img src="docs/desktop.png" width="900" alt="A Windows 11 desktop with the mini player in the bottom-right corner above the taskbar, playing Clair de Lune by Claude Debussy, and the app's icon in the system tray">
+  <img src="docs/demo.gif" width="900" alt="Animated demo on a simulated Windows 11 desktop: YouTube Music is playing Clair de Lune by Claude Debussy. The pointer clicks a notes window, which comes to the front and covers YouTube Music, and the mini player slides into the bottom-right corner. The pointer then clicks back on YouTube Music, and the mini player slides away.">
 </p>
+<p align="center"><sub>Click another window over YouTube Music and the player slides in; click back on YouTube Music and it slides away.</sub></p>
 <p align="center">
   <img src="docs/mini-player.png" width="388" alt="Close-up of the mini player: moonlit artwork, Clair de Lune by Claude Debussy, previous, pause and next buttons, and a red time bar at 1:47 of 5:02">
   &nbsp;&nbsp;
   <img src="docs/compact-player.png" width="164" alt="Close-up of the compact player: the moonlit cover on top, with previous, pause and next buttons underneath">
 </p>
-<p align="center"><sub>Full player and compact player (the − button switches; clicking the cover switches back). Simulated desktop. "Clair de Lune" by Claude Debussy is in the public domain, and the moonlit artwork is an original drawing, not a real album cover.</sub></p>
+<p align="center"><sub>Full player and compact player (the − button switches; clicking the cover switches back). Simulated desktop and music app. "Clair de Lune" by Claude Debussy is in the public domain, and the moonlit artwork is an original drawing, not a real album cover.</sub></p>
 
 The mini player shows:
 - the song's artwork, title and artist (long titles and artist names slide back and forth at a steady pace, setting off together)
@@ -61,10 +62,10 @@ To check the design without touching any media:
 ```powershell
 .\bin\YTMusicMini.exe --preview        # neutral colors
 .\bin\YTMusicMini.exe --preview 140    # tinted as if the artwork were green (any hue 0-360)
-.\docs\make-screenshot.ps1             # re-renders the two README images in docs\
+.\docs\make-screenshot.ps1             # re-renders the README images in docs\ (the GIF needs ffmpeg)
 ```
 
-`--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss`, `--snapshot <file.png>`, `--desktop` (snapshot on a simulated Windows desktop) and `--compact` (the compact player).
+`--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss`, `--snapshot <file.png>`, `--desktop` (snapshot on a simulated Windows desktop), `--compact` (the compact player) and `--demo <folder>` (the animated demo, as PNG frames).
 
 The background colors live in `Theme` (`BgLightness`, `Bg2Lightness`, `BgChroma`) and the edge and its motion in `MiniWindow` (`GradientEdge`, `GradientMovement`, `GradientSpeed`) in `MiniPlayer.cs`. `--preview` also takes `--hue2` to set the right-hand color.
 
@@ -76,7 +77,7 @@ The background colors live in `Theme` (`BgLightness`, `Bg2Lightness`, `BgChroma`
 | `build.ps1` | Compile, install and start |
 | `make-icon.ps1` | Draws `app.ico` (run automatically by the build) |
 | `app.manifest` | Tells Windows the app handles per-monitor display scaling |
-| `docs/make-screenshot.ps1` | Renders the README images (`docs/desktop.png`, `docs/mini-player.png`, `docs/compact-player.png`) |
+| `docs/make-screenshot.ps1` | Renders the README images (`docs/demo.gif`, `docs/desktop.png`, `docs/mini-player.png`, `docs/compact-player.png`) |
 
 Settings and a small log are kept in `%LOCALAPPDATA%\YT Music Mini`.
 
