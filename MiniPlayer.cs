@@ -791,6 +791,8 @@ namespace YTMusicMini
         Theme shown;
         ImageSource currentArt;
         Marquee titleMarquee, artistMarquee;
+        readonly Stopwatch marqueeClock = new Stopwatch();
+        double marqueeSlide;
         readonly DispatcherTimer marqueeTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
 
         public MiniWindow()
@@ -835,9 +837,9 @@ namespace YTMusicMini
             artistMarquee = new Marquee(ArtistBox, ArtistText, ArtistFade);
             marqueeTimer.Tick += delegate
             {
-                double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-                titleMarquee.Step(ppd);
-                artistMarquee.Step(ppd);
+                double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip, t = marqueeClock.Elapsed.TotalSeconds;
+                titleMarquee.Step(t, marqueeSlide, ppd);
+                artistMarquee.Step(t, marqueeSlide, ppd);
             };
 
             // Drag the player by any empty area; it snaps when let go near the bottom of the screen.
@@ -1094,8 +1096,10 @@ namespace YTMusicMini
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate
             {
                 if (!IsVisible) return;
-                titleMarquee.Start(0);
-                artistMarquee.Start(1.1);
+                titleMarquee.Start();
+                artistMarquee.Start();
+                marqueeSlide = Math.Max(titleMarquee.Travel, artistMarquee.Travel);
+                marqueeClock.Restart();
                 if (titleMarquee.Active || artistMarquee.Active) marqueeTimer.Start();
                 else marqueeTimer.Stop();
             }));
@@ -1109,23 +1113,23 @@ namespace YTMusicMini
         }
     }
 
-    // Text that doesn't fit slides to its end, rests, slides back, rests, and repeats; text that fits
-    // stays still. It moves in whole-pixel steps so the letters stay sharp the whole time.
+    // Text that doesn't fit slides to its end at a constant speed, rests, slides back, rests, and
+    // repeats; text that fits stays still. The title and artist share one schedule: both set off from
+    // each side at the same moment, and the shorter one simply arrives first and waits. It moves in
+    // whole-pixel steps so the letters stay sharp the whole time.
     class Marquee
     {
-        // Speeds in pixels per second, relative to the original (eased) motion's top speed of about
-        // 25 px/s: 70% through the middle 60% of each slide, 40% through the first and last 20% of it.
-        const double OriginalSpeed = 16 * Math.PI / 2;
-        const double CruiseSpeed = 0.70 * OriginalSpeed, EdgeSpeed = 0.40 * OriginalSpeed, EdgePart = 0.20;
-        // Seconds resting at each end, and extra pixels to slide so the last letter clears the edge fade.
-        const double Hold = 2.4, EndPad = 14;
+        // Pixels per second: 70% of the original motion's top speed (about 25 px/s).
+        public const double Speed = 0.70 * (16 * Math.PI / 2);
+        // Seconds resting at each side, and extra pixels to slide so the last letter clears the edge fade.
+        public const double Hold = 2.4;
+        const double EndPad = 14;
 
         readonly Canvas box;
         readonly TextBlock text;
         readonly Rectangle fade;
         readonly TranslateTransform shift = new TranslateTransform();
-        readonly Stopwatch clock = new Stopwatch();
-        double distance, edgeTime, cruiseTime, move, delay;
+        double distance;
         public bool Active;
 
         public Marquee(Canvas box, TextBlock text, Rectangle fade)
@@ -1136,52 +1140,40 @@ namespace YTMusicMini
             text.RenderTransform = shift;
         }
 
-        public void Start(double delaySeconds)
+        // Seconds this text needs to slide from one side to the other.
+        public double Travel { get { return Active ? distance / Speed : 0; } }
+
+        public void Start()
         {
             Stop();
             text.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
             double over = text.DesiredSize.Width - box.ActualWidth;
             if (box.ActualWidth <= 0 || over <= 1) return;
             distance = Math.Ceiling(over + EndPad);
-            edgeTime = EdgePart * distance / EdgeSpeed;
-            cruiseTime = (1 - 2 * EdgePart) * distance / CruiseSpeed;
-            move = 2 * edgeTime + cruiseTime;
-            delay = delaySeconds;
             fade.Visibility = Visibility.Visible;
             Active = true;
-            clock.Restart();
         }
 
         public void Stop()
         {
             Active = false;
-            clock.Reset();
             shift.X = 0;
             fade.Visibility = Visibility.Collapsed;
         }
 
-        public void Step(double pixelsPerDip)
+        // t: seconds since both started; slide: the longest travel time of the two, which sets when
+        // both turn around.
+        public void Step(double t, double slide, double pixelsPerDip)
         {
             if (!Active) return;
-            double t = clock.Elapsed.TotalSeconds - delay, x = 0;
-            if (t > 0)
-            {
-                t %= 2 * Hold + 2 * move;
-                if (t < Hold) x = 0;
-                else if (t < Hold + move) x = -Travelled(t - Hold);
-                else if (t < 2 * Hold + move) x = -distance;
-                else x = -distance + Travelled(t - 2 * Hold - move);
-            }
+            double x;
+            t %= 2 * Hold + 2 * slide;
+            if (t < Hold) x = 0;
+            else if (t < Hold + slide) x = -Math.Min(distance, Speed * (t - Hold));
+            else if (t < 2 * Hold + slide) x = -distance;
+            else x = -Math.Max(0, distance - Speed * (t - 2 * Hold - slide));
             x = Math.Round(x * pixelsPerDip) / pixelsPerDip;
             if (x != shift.X) shift.X = x;
-        }
-
-        // How far the text has slid t seconds into a slide: slow, then cruising, then slow again.
-        double Travelled(double t)
-        {
-            if (t <= edgeTime) return EdgeSpeed * t;
-            if (t <= edgeTime + cruiseTime) return EdgePart * distance + CruiseSpeed * (t - edgeTime);
-            return Math.Min(distance, (1 - EdgePart) * distance + EdgeSpeed * (t - edgeTime - cruiseTime));
         }
     }
 
