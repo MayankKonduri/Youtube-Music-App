@@ -229,6 +229,15 @@ namespace YTMusicMini
 
         public static double? DominantHue(BitmapSource src)
         {
+            double? second;
+            return DominantHues(src, out second);
+        }
+
+        // The artwork's main hue and, if it has one, a clearly different second hue (at least 60 degrees
+        // around the color wheel away, and covering at least 15% as much of the picture).
+        public static double? DominantHues(BitmapSource src, out double? second)
+        {
+            second = null;
             try
             {
                 double scale = 40.0 / Math.Max(src.PixelWidth, src.PixelHeight);
@@ -262,45 +271,69 @@ namespace YTMusicMini
                 }
                 if (colorful < 0.06 * (w * h)) return null;
 
+                var scores = new double[36];
                 int best = 0;
-                double bestScore = -1;
                 for (int i = 0; i < 36; i++)
                 {
-                    double score = weight[i] + 0.5 * (weight[(i + 35) % 36] + weight[(i + 1) % 36]);
-                    if (score > bestScore) { bestScore = score; best = i; }
+                    scores[i] = weight[i] + 0.5 * (weight[(i + 35) % 36] + weight[(i + 1) % 36]);
+                    if (scores[i] > scores[best]) best = i;
                 }
-                double c = 0, sn = 0;
-                for (int k = -1; k <= 1; k++) { int i = (best + k + 36) % 36; c += cos[i]; sn += sin[i]; }
-                double result = Math.Atan2(sn, c) * 180 / Math.PI;
-                return result < 0 ? result + 360 : result;
+                int next = -1;
+                for (int i = 0; i < 36; i++)
+                {
+                    int apart = Math.Abs(i - best);
+                    if (Math.Min(apart, 36 - apart) < 6 || scores[i] < 0.15 * scores[best]) continue;
+                    if (next < 0 || scores[i] > scores[next]) next = i;
+                }
+                if (next >= 0) second = BinHue(next, cos, sin);
+                return BinHue(best, cos, sin);
             }
             catch { return null; }
         }
+
+        // The average hue of a bin and its two neighbours.
+        static double BinHue(int bin, double[] cos, double[] sin)
+        {
+            double c = 0, sn = 0;
+            for (int k = -1; k <= 1; k++) { int i = (bin + k + 36) % 36; c += cos[i]; sn += sin[i]; }
+            double result = Math.Atan2(sn, c) * 180 / Math.PI;
+            return result < 0 ? result + 360 : result;
+        }
     }
 
-    // All colors of the player, derived from the artwork's main color. The time bar always stays red.
+    // All colors of the player, derived from the artwork. The time bar always stays red.
     // Colors are built in OKLCH (lightness, chroma = colorfulness, hue): equal lightness there looks
     // equally bright to the eye, so every artwork color gets the same light-but-colorful look.
     class Theme
     {
-        // The background style ("vivid pastel"): its lightness and colorfulness.
-        public const double BgLightness = 0.86, BgChroma = 0.085;
+        // The background: a gradient from the artwork's main color (left) to its second color (right,
+        // a little deeper). With only one main color, the right side uses a nearby, shifted hue.
+        public const double BgLightness = 0.84, Bg2Lightness = 0.79, BgChroma = 0.11, SecondHueShift = 35;
+        // Lightness and colorfulness of the artwork placeholder and border, from the main color.
+        const double ShadeLightness = 0.79, ShadeChroma = 0.085;
 
-        public Color Bg, Border, Title, Sub, Icon, PlayBg, PlayBgHover, PlayFg, Track, Time, Hover, Press, Placeholder;
+        public Color Bg, Bg2, Border, Title, Sub, Icon, PlayBg, PlayBgHover, PlayFg, Track, Time, Hover, Press, Placeholder;
 
-        public static Theme For(double? artHue)
+        // The artwork hue is an HSV hue; take a typical color of that hue and find its OKLCH hue.
+        static double ToOkHue(double artHue)
         {
-            double h = 0, c = 0;
+            double[] rgb = Hsv(artHue, 0.75, 0.85);
+            return OkHue(rgb[0], rgb[1], rgb[2]);
+        }
+
+        public static Theme For(double? artHue, double? secondHue)
+        {
+            double h = 0, h2 = 0, c = 0;
             if (artHue.HasValue)
             {
-                // The artwork hue is an HSV hue; take a typical color of that hue and find its OKLCH hue.
-                double[] rgb = Hsv(artHue.Value, 0.75, 0.85);
-                h = OkHue(rgb[0], rgb[1], rgb[2]);
+                h = ToOkHue(artHue.Value);
+                h2 = secondHue.HasValue ? ToOkHue(secondHue.Value) : (h + SecondHueShift) % 360;
                 c = 1;
             }
             var t = new Theme();
             t.Bg = Ok(BgLightness, BgChroma * c, h);
-            t.Border = Ok(BgLightness - 0.07, BgChroma * c, h);
+            t.Bg2 = Ok(Bg2Lightness, BgChroma * c, h2);
+            t.Border = Ok(ShadeLightness - 0.06, ShadeChroma * c, h);
             t.Title = Ok(0.25, 0.04 * c, h);
             t.Sub = Ok(0.42, 0.04 * c, h);
             t.Icon = Ok(0.27, 0.04 * c, h);
@@ -311,7 +344,7 @@ namespace YTMusicMini
             t.Time = Ok(0.42, 0.04 * c, h);
             t.Hover = Color.FromArgb(0x1A, 0, 0, 0);
             t.Press = Color.FromArgb(0x30, 0, 0, 0);
-            t.Placeholder = Ok(BgLightness - 0.07, BgChroma * c, h);
+            t.Placeholder = Ok(ShadeLightness, ShadeChroma * c, h);
             return t;
         }
 
@@ -370,6 +403,7 @@ namespace YTMusicMini
             // The original dark look, used until the first artwork arrives.
             var t = new Theme();
             t.Bg = Color.FromRgb(0x20, 0x20, 0x20);
+            t.Bg2 = Color.FromRgb(0x20, 0x20, 0x20);
             t.Border = Color.FromRgb(0x3A, 0x3A, 0x3A);
             t.Title = Colors.White;
             t.Sub = Color.FromRgb(0xAA, 0xAA, 0xAA);
@@ -385,7 +419,7 @@ namespace YTMusicMini
             return t;
         }
 
-        static Color Mix(Color a, Color b, double p)
+        public static Color Mix(Color a, Color b, double p)
         {
             return Color.FromArgb((byte)Math.Round(a.A + (b.A - a.A) * p), (byte)Math.Round(a.R + (b.R - a.R) * p),
                                   (byte)Math.Round(a.G + (b.G - a.G) * p), (byte)Math.Round(a.B + (b.B - a.B) * p));
@@ -394,7 +428,7 @@ namespace YTMusicMini
         public static Theme Lerp(Theme a, Theme b, double p)
         {
             var t = new Theme();
-            t.Bg = Mix(a.Bg, b.Bg, p); t.Border = Mix(a.Border, b.Border, p); t.Title = Mix(a.Title, b.Title, p);
+            t.Bg = Mix(a.Bg, b.Bg, p); t.Bg2 = Mix(a.Bg2, b.Bg2, p); t.Border = Mix(a.Border, b.Border, p); t.Title = Mix(a.Title, b.Title, p);
             t.Sub = Mix(a.Sub, b.Sub, p); t.Icon = Mix(a.Icon, b.Icon, p); t.PlayBg = Mix(a.PlayBg, b.PlayBg, p);
             t.PlayBgHover = Mix(a.PlayBgHover, b.PlayBgHover, p); t.PlayFg = Mix(a.PlayFg, b.PlayFg, p);
             t.Track = Mix(a.Track, b.Track, p); t.Time = Mix(a.Time, b.Time, p); t.Hover = Mix(a.Hover, b.Hover, p);
@@ -419,7 +453,7 @@ namespace YTMusicMini
         public TimeSpan Position, Duration;
         public DateTimeOffset UpdatedAt;
         public ImageSource Art;
-        public double? Hue;
+        public double? Hue, Hue2;
         public int ArtVersion;
 
         public async Task Init()
@@ -563,7 +597,7 @@ namespace YTMusicMini
                     {
                         artBytes = bytes;
                         Art = bmp;
-                        Hue = ArtColor.DominantHue(bmp);
+                        Hue = ArtColor.DominantHues(bmp, out Hue2);
                         artSongKey = key;
                         ArtVersion++;
                     }
@@ -785,6 +819,11 @@ namespace YTMusicMini
 
         readonly Border root;
         Brush placeholder = Brushes.Transparent;
+        readonly LinearGradientBrush background = new LinearGradientBrush { MappingMode = BrushMappingMode.Absolute };
+        readonly GradientStop stopA = new GradientStop(), stopB = new GradientStop(), stopC = new GradientStop(), stopD = new GradientStop { Offset = 1 };
+        readonly Stopwatch gradientClock = Stopwatch.StartNew();
+        readonly DispatcherTimer gradientTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
+        Point gradientStart, gradientEnd;
         IntPtr hwnd;
         double alpha;
         Anim fadeAnim, moveAnim, themeAnim;
@@ -833,6 +872,9 @@ namespace YTMusicMini
             Knob = (Ellipse)root.FindName("Knob");
             TitleFade = (Rectangle)root.FindName("TitleFade");
             ArtistFade = (Rectangle)root.FindName("ArtistFade");
+            foreach (var stop in new[] { stopA, stopB, stopC, stopD }) background.GradientStops.Add(stop);
+            root.Background = background;
+            gradientTimer.Tick += delegate { UpdateGradient(gradientClock.Elapsed.TotalSeconds * GradientSpeed); };
             titleMarquee = new Marquee(TitleBox, TitleText, TitleFade);
             artistMarquee = new Marquee(ArtistBox, ArtistText, ArtistFade);
             marqueeTimer.Tick += delegate
@@ -957,6 +999,8 @@ namespace YTMusicMini
             FadeTo(1, 230, null);
             moveAnim = Anim.Run(280, p => MoveTo(fromX + (x - fromX) * p, fromY + (y - fromY) * p), null);
             RefreshMarquees();
+            UpdateGradient(gradientClock.Elapsed.TotalSeconds * GradientSpeed);
+            gradientTimer.Start();
         }
 
         // Fades out while dipping down a little, then hides.
@@ -974,6 +1018,7 @@ namespace YTMusicMini
                 MoveTo(x, y);
                 Hiding = false;
                 StopMarquees();
+                gradientTimer.Stop();
             });
         }
 
@@ -1000,12 +1045,57 @@ namespace YTMusicMini
             return b;
         }
 
+        // The moving background: a diagonal blend from the artwork's main color (left) to its second
+        // color (right) that slowly rocks back and forth while the meeting point drifts around the middle.
+        const double GradientMovement = 3.0, GradientSpeed = 2.1, GradientBlend = 0.14;
+
+        void UpdateGradient(double t)
+        {
+            double w = root.ActualWidth > 0 ? root.ActualWidth : Width, h = root.ActualHeight > 0 ? root.ActualHeight : Height;
+            double angle = (100 + 14 * GradientMovement * Math.Sin(t * 0.35)) * Math.PI / 180;
+            double mid = 0.5 + 0.04 * GradientMovement * Math.Sin(t * 0.5 + 1);
+            double dx = Math.Sin(angle), dy = -Math.Cos(angle), length = Math.Abs(w * dx) + Math.Abs(h * dy);
+            gradientStart = new Point(w / 2 - dx * length / 2, h / 2 - dy * length / 2);
+            gradientEnd = new Point(w / 2 + dx * length / 2, h / 2 + dy * length / 2);
+            background.StartPoint = gradientStart;
+            background.EndPoint = gradientEnd;
+            stopB.Offset = Math.Max(0, mid - GradientBlend);
+            stopC.Offset = Math.Min(1, mid + GradientBlend);
+            UpdateFades();
+        }
+
+        // The background color at a point on the player.
+        Color BackgroundAt(Point p)
+        {
+            double vx = gradientEnd.X - gradientStart.X, vy = gradientEnd.Y - gradientStart.Y, length2 = vx * vx + vy * vy;
+            double f = length2 > 0 ? ((p.X - gradientStart.X) * vx + (p.Y - gradientStart.Y) * vy) / length2 : 0;
+            if (f <= stopB.Offset) return stopA.Color;
+            if (f >= stopC.Offset) return stopD.Color;
+            return Theme.Mix(stopB.Color, stopC.Color, (f - stopB.Offset) / (stopC.Offset - stopB.Offset));
+        }
+
+        // The soft fade at the right edge of scrolling text is painted in whatever color is behind it.
+        void UpdateFades()
+        {
+            foreach (var fade in new[] { TitleFade, ArtistFade })
+            {
+                if (fade.Visibility != Visibility.Visible || fade.ActualWidth <= 0) continue;
+                Color c = BackgroundAt(fade.TranslatePoint(new Point(fade.ActualWidth / 2, fade.ActualHeight / 2), root));
+                var edge = new LinearGradientBrush(Color.FromArgb(0, c.R, c.G, c.B), c, 0);
+                edge.Freeze();
+                fade.Fill = edge;
+            }
+        }
+
         // Fresh brushes every time (WPF locks brushes that styles and templates have used, so they
         // can't be recolored in place). Called once per frame while a theme change animates.
         void SetColors(Theme t)
         {
             shown = t;
-            root.Background = B(t.Bg);
+            stopA.Color = t.Bg;
+            stopB.Color = t.Bg;
+            stopC.Color = t.Bg2;
+            stopD.Color = t.Bg2;
             root.BorderBrush = B(t.Border);
             TitleText.Foreground = B(t.Title);
             Brush sub = B(t.Sub), icon = B(t.Icon), time = B(t.Time);
@@ -1027,11 +1117,7 @@ namespace YTMusicMini
             if (ArtFront.Background == placeholder || ArtFront.Background == null) ArtFront.Background = newPlaceholder;
             if (ArtBack.Background == placeholder) ArtBack.Background = newPlaceholder;
             placeholder = newPlaceholder;
-            // The soft fade at the right edge of scrolling text is painted in the background color.
-            var edge = new LinearGradientBrush(Color.FromArgb(0, t.Bg.R, t.Bg.G, t.Bg.B), t.Bg, 0);
-            edge.Freeze();
-            TitleFade.Fill = edge;
-            ArtistFade.Fill = edge;
+            UpdateFades();
         }
 
         // Crossfades from the previous artwork to the new one.
@@ -1141,6 +1227,7 @@ namespace YTMusicMini
             stage.Arrange(new Rect(0, 0, stage.Width, stage.Height));
             stage.UpdateLayout();
             ShowFraction(fraction);
+            UpdateGradient(0);
             stage.UpdateLayout();
             var image = new RenderTargetBitmap((int)(stage.Width * scale), (int)(stage.Height * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
             image.Render(stage);
@@ -1438,7 +1525,7 @@ namespace YTMusicMini
                         o.Artist ?? "Harvey Spector • Premam (Original Motion Picture Soundtrack)", false);
             win.CurText.Text = o.Position ?? "1:32";
             win.DurText.Text = o.Duration ?? "3:48";
-            double? hue = o.Hue;
+            double? hue = o.Hue, hue2 = o.Hue2;
             if (o.ArtPath != null)
             {
                 var art = new BitmapImage();
@@ -1449,9 +1536,9 @@ namespace YTMusicMini
                 art.EndInit();
                 art.Freeze();
                 win.SetArt(art, false);
-                hue = ArtColor.DominantHue(art);
+                hue = ArtColor.DominantHues(art, out hue2);
             }
-            win.ApplyTheme(Theme.For(hue), false);
+            win.ApplyTheme(Theme.For(hue, hue2), false);
             double fraction = Fraction(win.CurText.Text, win.DurText.Text);
             if (o.SnapshotPath != null)
             {
@@ -1617,7 +1704,7 @@ namespace YTMusicMini
             {
                 shownArtVersion = media.ArtVersion;
                 win.SetArt(media.Art);
-                if (media.Art != null) win.ApplyTheme(Theme.For(media.Hue), win.IsVisible);
+                if (media.Art != null) win.ApplyTheme(Theme.For(media.Hue, media.Hue2), win.IsVisible);
             }
             RenderPosition();
         }
@@ -1713,11 +1800,11 @@ namespace YTMusicMini
     }
 
     // Sample data for "--preview": an optional hue right after the flag ("--preview 140" looks like a
-    // green album), plus --title, --artist, --art <image>, --position m:ss, --duration m:ss,
-    // --snapshot <file.png> and --desktop (snapshot the player on a simulated Windows desktop).
+    // green album), plus --hue2 <second hue>, --title, --artist, --art <image>, --position m:ss,
+    // --duration m:ss, --snapshot <file.png> and --desktop (snapshot on a simulated Windows desktop).
     class PreviewOptions
     {
-        public double? Hue;
+        public double? Hue, Hue2;
         public string Title, Artist, ArtPath, Position, Duration, SnapshotPath;
         public bool Desktop;
 
@@ -1734,6 +1821,9 @@ namespace YTMusicMini
             o.Duration = Value(args, "--duration");
             o.SnapshotPath = Value(args, "--snapshot");
             o.Desktop = Array.IndexOf(args, "--desktop") >= 0;
+            string second = Value(args, "--hue2");
+            if (second != null && double.TryParse(second, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out h)) o.Hue2 = h;
             return o;
         }
 

@@ -19,7 +19,7 @@ The mini player shows:
 - a button to reopen YouTube Music, and one to hide the player until the next minimize
 
 Little touches:
-- **Colors from the artwork:** the background is a vivid pastel of each song's main artwork color, built in OKLCH (a color model where equal lightness looks equally bright), so every color gets the same light-but-colorful look. It fades to the next song's color.
+- **Colors from the artwork:** the background is a slowly rocking diagonal gradient from the artwork's main color (left) to its second color (right), as light, vivid pastels built in OKLCH (a color model where equal lightness looks equally bright). Covers with a single main color get a nearby shifted shade on the right. It fades to the next song's colors.
 - **Smooth animations:** it fades and slides in when you minimize, and the artwork crossfades between songs.
 - **Sharp on every monitor:** it renders at each monitor's own display scaling, with pixel-snapped text that stays crisp while it scrolls.
 - **Snaps to the bottom:** drop it near the bottom edge or a bottom corner and it glides into place. Anywhere else, it stays where you drop it. It remembers the spot, and a snapped corner stays that corner even if monitors or scaling change.
@@ -63,7 +63,7 @@ To check the design without touching any media:
 
 `--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss`, `--snapshot <file.png>` and `--desktop` (snapshot on a simulated Windows desktop).
 
-The background style lives in `Theme.BgLightness` and `Theme.BgChroma` in `MiniPlayer.cs`.
+The background colors live in `Theme` (`BgLightness`, `Bg2Lightness`, `BgChroma`) and the motion in `MiniWindow` (`GradientMovement`, `GradientSpeed`) in `MiniPlayer.cs`. `--preview` also takes `--hue2` to set the right-hand color.
 
 ## Files
 
