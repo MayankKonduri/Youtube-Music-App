@@ -17,9 +17,9 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using System.Windows.Shell;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Windows.Media.Control;
@@ -48,11 +48,11 @@ namespace YTMusicMini
         [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
         [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hwnd, int index);
         [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr hwnd, int index, int value);
-        [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
         public const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016, EVENT_SYSTEM_MINIMIZEEND = 0x0017;
         public const uint WINEVENT_OUTOFCONTEXT = 0x0000, WINEVENT_SKIPOWNPROCESS = 0x0002;
-        public const int SW_RESTORE = 9, GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;
+        public const int SW_RESTORE = 9, GWL_EXSTYLE = -20;
+        public const int WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;
         public const uint GW_OWNER = 4;
 
         public static string Title(IntPtr hwnd)
@@ -133,36 +133,214 @@ namespace YTMusicMini
         }
     }
 
+    // A small frame-synced tween: calls step(0..1, eased out) every frame for the given duration.
+    class Anim
+    {
+        readonly Stopwatch clock = Stopwatch.StartNew();
+        readonly double ms;
+        readonly Action<double> step;
+        readonly Action done;
+        bool running = true;
+
+        Anim(double ms, Action<double> step, Action done) { this.ms = ms; this.step = step; this.done = done; }
+
+        public static Anim Run(double ms, Action<double> step, Action done)
+        {
+            var a = new Anim(ms, step, done);
+            CompositionTarget.Rendering += a.Frame;
+            return a;
+        }
+
+        void Frame(object sender, EventArgs e)
+        {
+            if (!running) return;
+            double p = ms <= 0 ? 1 : Math.Min(1, clock.Elapsed.TotalMilliseconds / ms);
+            step(1 - Math.Pow(1 - p, 3));
+            if (p >= 1)
+            {
+                Stop();
+                if (done != null) done();
+            }
+        }
+
+        public void Stop()
+        {
+            if (!running) return;
+            running = false;
+            CompositionTarget.Rendering -= Frame;
+        }
+
+        public static void Stop(Anim a) { if (a != null) a.Stop(); }
+    }
+
+    // Finds the main hue of the artwork, ignoring dark, washed-out and gray pixels.
+    static class ArtColor
+    {
+        public static double? DominantHue(BitmapSource src)
+        {
+            try
+            {
+                double scale = 40.0 / Math.Max(src.PixelWidth, src.PixelHeight);
+                var small = new FormatConvertedBitmap(new TransformedBitmap(src, new ScaleTransform(scale, scale)), PixelFormats.Bgra32, null, 0);
+                int w = small.PixelWidth, h = small.PixelHeight;
+                var px = new byte[w * h * 4];
+                small.CopyPixels(px, w * 4, 0);
+
+                var weight = new double[36];
+                var cos = new double[36];
+                var sin = new double[36];
+                int colorful = 0;
+                for (int i = 0; i < px.Length; i += 4)
+                {
+                    double b = px[i] / 255.0, g = px[i + 1] / 255.0, r = px[i + 2] / 255.0;
+                    double max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b));
+                    double v = max, s = max <= 0 ? 0 : (max - min) / max;
+                    if (v < 0.18 || s < 0.18) continue;
+                    double hue;
+                    double d = max - min;
+                    if (max == r) hue = 60 * (((g - b) / d) % 6);
+                    else if (max == g) hue = 60 * ((b - r) / d + 2);
+                    else hue = 60 * ((r - g) / d + 4);
+                    if (hue < 0) hue += 360;
+                    double wgt = s * s * v;
+                    int bin = (int)(hue / 10) % 36;
+                    weight[bin] += wgt;
+                    cos[bin] += Math.Cos(hue * Math.PI / 180) * wgt;
+                    sin[bin] += Math.Sin(hue * Math.PI / 180) * wgt;
+                    colorful++;
+                }
+                if (colorful < 0.06 * (w * h)) return null;
+
+                int best = 0;
+                double bestScore = -1;
+                for (int i = 0; i < 36; i++)
+                {
+                    double score = weight[i] + 0.5 * (weight[(i + 35) % 36] + weight[(i + 1) % 36]);
+                    if (score > bestScore) { bestScore = score; best = i; }
+                }
+                double c = 0, sn = 0;
+                for (int k = -1; k <= 1; k++) { int i = (best + k + 36) % 36; c += cos[i]; sn += sin[i]; }
+                double result = Math.Atan2(sn, c) * 180 / Math.PI;
+                return result < 0 ? result + 360 : result;
+            }
+            catch { return null; }
+        }
+    }
+
+    // All colors of the player, derived from the artwork's hue. The time bar always stays red.
+    class Theme
+    {
+        // The background style: saturation and lightness applied to the artwork's main hue.
+        // Lightness under 0.5 gives a dark player with light text; above gives a light one with dark text.
+        public const double Saturation = 0.38, Lightness = 0.86;
+
+        public Color Bg, Border, Title, Sub, Icon, PlayBg, PlayBgHover, PlayFg, Track, Time, Hover, Press, Placeholder;
+
+        static Color Hsl(double h, double s, double l)
+        {
+            l = Math.Max(0, Math.Min(1, l));
+            double c = (1 - Math.Abs(2 * l - 1)) * s, hp = (h % 360) / 60.0, x = c * (1 - Math.Abs(hp % 2 - 1)), m = l - c / 2;
+            double r = 0, g = 0, b = 0;
+            if (hp < 1) { r = c; g = x; }
+            else if (hp < 2) { r = x; g = c; }
+            else if (hp < 3) { g = c; b = x; }
+            else if (hp < 4) { g = x; b = c; }
+            else if (hp < 5) { r = x; b = c; }
+            else { r = c; b = x; }
+            return Color.FromRgb((byte)Math.Round((r + m) * 255), (byte)Math.Round((g + m) * 255), (byte)Math.Round((b + m) * 255));
+        }
+
+        public static Theme For(double? hue)
+        {
+            double h = hue.HasValue ? hue.Value : 0;
+            double tint = hue.HasValue ? 1 : 0;
+            double s = Saturation * tint, l = Lightness;
+            bool dark = l < 0.5;
+            var t = new Theme();
+            t.Bg = Hsl(h, s, l);
+            t.Border = dark ? Hsl(h, s, l + 0.12) : Hsl(h, s, l - 0.09);
+            t.Title = dark ? Colors.White : Hsl(h, 0.30 * tint, 0.13);
+            t.Sub = dark ? Hsl(h, 0.12 * tint, 0.74) : Hsl(h, 0.14 * tint, 0.36);
+            t.Icon = dark ? Colors.White : Hsl(h, 0.30 * tint, 0.16);
+            t.PlayBg = dark ? Colors.White : Hsl(h, 0.30 * tint, 0.16);
+            t.PlayBgHover = dark ? Color.FromRgb(0xE3, 0xE3, 0xE3) : Hsl(h, 0.30 * tint, 0.28);
+            t.PlayFg = dark ? Color.FromRgb(0x11, 0x11, 0x11) : Colors.White;
+            t.Track = dark ? Color.FromArgb(0x38, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x29, 0, 0, 0);
+            t.Time = dark ? Hsl(h, 0.10 * tint, 0.70) : Hsl(h, 0.12 * tint, 0.38);
+            t.Hover = dark ? Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x1A, 0, 0, 0);
+            t.Press = dark ? Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x30, 0, 0, 0);
+            t.Placeholder = dark ? Hsl(h, s, l + 0.08) : Hsl(h, s, l - 0.08);
+            return t;
+        }
+
+        public static Theme Default()
+        {
+            // The original dark look, used until the first artwork arrives.
+            var t = new Theme();
+            t.Bg = Color.FromRgb(0x20, 0x20, 0x20);
+            t.Border = Color.FromRgb(0x3A, 0x3A, 0x3A);
+            t.Title = Colors.White;
+            t.Sub = Color.FromRgb(0xAA, 0xAA, 0xAA);
+            t.Icon = Colors.White;
+            t.PlayBg = Colors.White;
+            t.PlayBgHover = Color.FromRgb(0xE3, 0xE3, 0xE3);
+            t.PlayFg = Color.FromRgb(0x11, 0x11, 0x11);
+            t.Track = Color.FromRgb(0x4D, 0x4D, 0x4D);
+            t.Time = Color.FromRgb(0xAA, 0xAA, 0xAA);
+            t.Hover = Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF);
+            t.Press = Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF);
+            t.Placeholder = Color.FromRgb(0x33, 0x33, 0x33);
+            return t;
+        }
+
+        static Color Mix(Color a, Color b, double p)
+        {
+            return Color.FromArgb((byte)Math.Round(a.A + (b.A - a.A) * p), (byte)Math.Round(a.R + (b.R - a.R) * p),
+                                  (byte)Math.Round(a.G + (b.G - a.G) * p), (byte)Math.Round(a.B + (b.B - a.B) * p));
+        }
+
+        public static Theme Lerp(Theme a, Theme b, double p)
+        {
+            var t = new Theme();
+            t.Bg = Mix(a.Bg, b.Bg, p); t.Border = Mix(a.Border, b.Border, p); t.Title = Mix(a.Title, b.Title, p);
+            t.Sub = Mix(a.Sub, b.Sub, p); t.Icon = Mix(a.Icon, b.Icon, p); t.PlayBg = Mix(a.PlayBg, b.PlayBg, p);
+            t.PlayBgHover = Mix(a.PlayBgHover, b.PlayBgHover, p); t.PlayFg = Mix(a.PlayFg, b.PlayFg, p);
+            t.Track = Mix(a.Track, b.Track, p); t.Time = Mix(a.Time, b.Time, p); t.Hover = Mix(a.Hover, b.Hover, p);
+            t.Press = Mix(a.Press, b.Press, p); t.Placeholder = Mix(a.Placeholder, b.Placeholder, p);
+            return t;
+        }
+    }
+
     // Now-playing state for the YouTube Music session, read from Windows' media controls.
     class Media
     {
         GlobalSystemMediaTransportControlsSessionManager manager;
         GlobalSystemMediaTransportControlsSession session;
         string artKey = "";
+        string appId = "";
 
         public string Title = "", Artist = "";
         public bool Playing, CanSeek, CanNext, CanPrev;
         public TimeSpan Position, Duration;
         public DateTimeOffset UpdatedAt;
         public ImageSource Art;
-        public bool HasSession { get { return session != null; } }
+        public double? Hue;
+        public int ArtVersion;
 
         public async Task Init()
         {
             manager = await WinRt.Run(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
         }
 
-        static bool IsBrowser(string appId)
+        static bool IsBrowser(string id)
         {
-            appId = (appId ?? "").ToLowerInvariant();
-            return appId.Contains("chrome") || appId.Contains("edge") || appId.Contains("brave") || appId.Contains("_crx_");
+            id = (id ?? "").ToLowerInvariant();
+            return id.Contains("chrome") || id.Contains("edge") || id.Contains("brave") || id.Contains("_crx_");
         }
 
         // Picks the YouTube Music session. Installed web apps report an id like "Chrome._crx_<app>", while
         // ordinary tabs report just "Chrome", so: the app's own session whose song title is in the window
         // title wins; a plain tab only counts if its title matches the window title.
-        string appId = "";
-
         public async Task<bool> Refresh(string windowTitle)
         {
             if (manager == null) return false;
@@ -210,28 +388,37 @@ namespace YTMusicMini
             UpdatedAt = tl.LastUpdatedTime;
 
             string key = Title + "\n" + Artist;
-            if (key != artKey && bestProps.Thumbnail != null)
+            if (key != artKey)
             {
-                try
+                if (bestProps.Thumbnail != null)
                 {
-                    var stream = await WinRt.Run(bestProps.Thumbnail.OpenReadAsync());
-                    var reader = new DataReader(stream);
-                    uint n = await WinRt.Run<uint>(reader.LoadAsync((uint)stream.Size));
-                    var bytes = new byte[n];
-                    reader.ReadBytes(bytes);
-                    var bmp = new BitmapImage();
-                    bmp.BeginInit();
-                    bmp.CacheOption = BitmapCacheOption.OnLoad;
-                    bmp.StreamSource = new MemoryStream(bytes);
-                    bmp.DecodePixelHeight = 160;
-                    bmp.EndInit();
-                    bmp.Freeze();
-                    Art = bmp;
-                    artKey = key;
+                    try
+                    {
+                        var stream = await WinRt.Run(bestProps.Thumbnail.OpenReadAsync());
+                        var reader = new DataReader(stream);
+                        uint n = await WinRt.Run<uint>(reader.LoadAsync((uint)stream.Size));
+                        var bytes = new byte[n];
+                        reader.ReadBytes(bytes);
+                        var bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.StreamSource = new MemoryStream(bytes);
+                        bmp.DecodePixelHeight = 160;
+                        bmp.EndInit();
+                        bmp.Freeze();
+                        Art = bmp;
+                        Hue = ArtColor.DominantHue(bmp);
+                        artKey = key;
+                        ArtVersion++;
+                    }
+                    catch (Exception ex) { Log.Write("Artwork failed: " + ex.Message); }
                 }
-                catch (Exception ex) { Log.Write("Artwork failed: " + ex.Message); }
+                else if (Art != null)
+                {
+                    Art = null;
+                    ArtVersion++;
+                }
             }
-            else if (key != artKey) Art = null;
             return true;
         }
 
@@ -271,8 +458,12 @@ namespace YTMusicMini
     {
         const string Xaml = @"
 <Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
-        x:Name='Root' Background='#202020' Padding='10' TextOptions.TextFormattingMode='Display'>
+        x:Name='Root' Padding='9' CornerRadius='8' BorderThickness='1' TextOptions.TextFormattingMode='Display'>
   <Border.Resources>
+    <SolidColorBrush x:Key='HoverBrush' Color='#26FFFFFF'/>
+    <SolidColorBrush x:Key='PressBrush' Color='#40FFFFFF'/>
+    <SolidColorBrush x:Key='PlayBgBrush' Color='#FFFFFF'/>
+    <SolidColorBrush x:Key='PlayBgHoverBrush' Color='#E3E3E3'/>
     <Style x:Key='Icon' TargetType='Button'>
       <Setter Property='Foreground' Value='#FFFFFF'/>
       <Setter Property='FontFamily' Value='Segoe Fluent Icons, Segoe MDL2 Assets'/>
@@ -288,8 +479,8 @@ namespace YTMusicMini
               <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Bg' Property='Background' Value='#26FFFFFF'/></Trigger>
-              <Trigger Property='IsPressed' Value='True'><Setter TargetName='Bg' Property='Background' Value='#40FFFFFF'/></Trigger>
+              <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Bg' Property='Background' Value='{DynamicResource HoverBrush}'/></Trigger>
+              <Trigger Property='IsPressed' Value='True'><Setter TargetName='Bg' Property='Background' Value='{DynamicResource PressBrush}'/></Trigger>
               <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.35'/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -300,7 +491,7 @@ namespace YTMusicMini
       <Setter Property='Width' Value='22'/>
       <Setter Property='Height' Value='22'/>
       <Setter Property='FontSize' Value='10'/>
-      <Setter Property='Foreground' Value='#B3B3B3'/>
+      <Setter Property='Foreground' Value='#AAAAAA'/>
     </Style>
     <Style x:Key='Play' TargetType='Button' BasedOn='{StaticResource Icon}'>
       <Setter Property='Foreground' Value='#111111'/>
@@ -309,12 +500,12 @@ namespace YTMusicMini
       <Setter Property='Template'>
         <Setter.Value>
           <ControlTemplate TargetType='Button'>
-            <Border x:Name='Bg' Background='#FFFFFF' CornerRadius='15'>
+            <Border x:Name='Bg' Background='{DynamicResource PlayBgBrush}' CornerRadius='15'>
               <ContentPresenter HorizontalAlignment='Center' VerticalAlignment='Center'/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Bg' Property='Background' Value='#E3E3E3'/></Trigger>
-              <Trigger Property='IsPressed' Value='True'><Setter TargetName='Bg' Property='Background' Value='#C8C8C8'/></Trigger>
+              <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Bg' Property='Background' Value='{DynamicResource PlayBgHoverBrush}'/></Trigger>
+              <Trigger Property='IsPressed' Value='True'><Setter TargetName='Bg' Property='Opacity' Value='0.85'/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -327,10 +518,12 @@ namespace YTMusicMini
       <ColumnDefinition Width='10'/>
       <ColumnDefinition Width='*'/>
     </Grid.ColumnDefinitions>
-    <Border x:Name='Art' Width='70' Height='70' CornerRadius='6' Background='#333333' Cursor='Hand' ToolTip='Open YouTube Music'>
-      <TextBlock x:Name='ArtGlyph' Text='&#xE8D6;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='24' Foreground='#7A7A7A'
+    <Grid x:Name='ArtHost' Width='70' Height='70' Cursor='Hand' ToolTip='Open YouTube Music'>
+      <Border x:Name='ArtBack' CornerRadius='6'/>
+      <Border x:Name='ArtFront' CornerRadius='6'/>
+      <TextBlock x:Name='ArtGlyph' Text='&#xE8D6;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='24'
                  HorizontalAlignment='Center' VerticalAlignment='Center'/>
-    </Border>
+    </Grid>
     <Grid Grid.Column='2'>
       <Grid.RowDefinitions>
         <RowDefinition Height='Auto'/>
@@ -341,11 +534,18 @@ namespace YTMusicMini
           <ColumnDefinition Width='*'/>
           <ColumnDefinition Width='Auto'/>
         </Grid.ColumnDefinitions>
-        <StackPanel Margin='0,1,6,0'>
-          <TextBlock x:Name='TitleText' Text='Nothing playing' Foreground='#FFFFFF' FontFamily='Segoe UI Variable Text, Segoe UI'
-                     FontSize='13' FontWeight='SemiBold' TextTrimming='CharacterEllipsis'/>
-          <TextBlock x:Name='ArtistText' Foreground='#AAAAAA' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='12'
-                     TextTrimming='CharacterEllipsis' Margin='0,1,0,0'/>
+        <StackPanel Margin='0,0,6,0'>
+          <Canvas x:Name='TitleBox' Height='18' ClipToBounds='True'>
+            <TextBlock x:Name='TitleText' Text='Nothing playing' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='13' FontWeight='SemiBold'
+                       TextOptions.TextFormattingMode='Ideal'>
+              <TextBlock.RenderTransform><TranslateTransform/></TextBlock.RenderTransform>
+            </TextBlock>
+          </Canvas>
+          <Canvas x:Name='ArtistBox' Height='16' ClipToBounds='True' Margin='0,1,0,0'>
+            <TextBlock x:Name='ArtistText' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='12' TextOptions.TextFormattingMode='Ideal'>
+              <TextBlock.RenderTransform><TranslateTransform/></TextBlock.RenderTransform>
+            </TextBlock>
+          </Canvas>
         </StackPanel>
         <StackPanel Grid.Column='1' Orientation='Horizontal' VerticalAlignment='Top' Margin='0,-4,-4,0'>
           <Button x:Name='RestoreBtn' Style='{StaticResource Small}' Content='&#xE8A7;' ToolTip='Open YouTube Music'/>
@@ -365,54 +565,64 @@ namespace YTMusicMini
         <Button x:Name='PrevBtn' Style='{StaticResource Icon}' Content='&#xE892;' ToolTip='Previous'/>
         <Button x:Name='PlayBtn' Grid.Column='1' Style='{StaticResource Play}' Content='&#xE769;' Margin='2,0' ToolTip='Play / pause'/>
         <Button x:Name='NextBtn' Grid.Column='2' Style='{StaticResource Icon}' Content='&#xE893;' ToolTip='Next'/>
-        <TextBlock x:Name='CurText' Grid.Column='4' Text='0:00' Foreground='#AAAAAA' FontSize='10' FontFamily='Segoe UI'
-                   VerticalAlignment='Center' Margin='0,0,6,0'/>
+        <TextBlock x:Name='CurText' Grid.Column='4' Text='0:00' FontSize='10' FontFamily='Segoe UI' VerticalAlignment='Center' Margin='0,0,6,0'/>
         <Grid x:Name='Seek' Grid.Column='5' Height='16' Background='Transparent' Cursor='Hand' VerticalAlignment='Center'>
-          <Border x:Name='Track' Height='3' CornerRadius='1.5' Background='#4D4D4D' VerticalAlignment='Center'/>
+          <Border x:Name='Track' Height='3' CornerRadius='1.5' VerticalAlignment='Center'/>
           <Border x:Name='Fill' Height='3' CornerRadius='1.5' Background='#FF0033' HorizontalAlignment='Left' Width='0' VerticalAlignment='Center'/>
           <Ellipse x:Name='Knob' Width='10' Height='10' Fill='#FF0033' HorizontalAlignment='Left' VerticalAlignment='Center' Visibility='Hidden'/>
         </Grid>
-        <TextBlock x:Name='DurText' Grid.Column='6' Text='0:00' Foreground='#AAAAAA' FontSize='10' FontFamily='Segoe UI'
-                   VerticalAlignment='Center' Margin='6,0,0,0'/>
+        <TextBlock x:Name='DurText' Grid.Column='6' Text='0:00' FontSize='10' FontFamily='Segoe UI' VerticalAlignment='Center' Margin='6,0,0,0'/>
       </Grid>
     </Grid>
   </Grid>
 </Border>";
 
-        public Border Art, Fill, Track;
+        // Scrolling text: speed in pixels per second and how long it rests at each end.
+        const double MarqueeSpeed = 16, MarqueeHold = 2.4, MarqueeEndPad = 14;
+        // Opacity while the mouse isn't over the player.
+        const double IdleAlpha = 0.90;
+
+        public Border ArtBack, ArtFront, Fill, Track;
+        public Grid ArtHost, Seek;
+        public Canvas TitleBox, ArtistBox;
         public TextBlock ArtGlyph, TitleText, ArtistText, CurText, DurText;
         public Button PlayBtn, PrevBtn, NextBtn, RestoreBtn, CloseBtn;
-        public Grid Seek;
         public Ellipse Knob;
-        public bool Dragging;
+        public bool Dragging, Hiding;
         public double DragFraction;
         public event Action<double> SeekRequested;
-        public event Action Moved;
+        public event Action DragFinished;
+
+        readonly Border root;
+        Brush placeholder = Brushes.Transparent;
+        double alpha;
+        Anim fadeAnim, moveAnim, themeAnim;
+        Theme shown;
+        ImageSource currentArt;
 
         public MiniWindow()
         {
             Title = "YT Music Mini";
             Width = 340;
             Height = 90;
-            WindowStyle = WindowStyle.SingleBorderWindow;
+            // A transparent window that draws its own rounded card, so the whole player can fade.
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
             ResizeMode = ResizeMode.NoResize;
             ShowInTaskbar = false;
             Topmost = true;
             ShowActivated = false;
-            Background = new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x20));
-            WindowChrome.SetWindowChrome(this, new WindowChrome
-            {
-                CaptionHeight = 0,
-                GlassFrameThickness = new Thickness(0, 0, 0, 1),
-                ResizeBorderThickness = new Thickness(0),
-                CornerRadius = new CornerRadius(0),
-                UseAeroCaptionButtons = false
-            });
+            Opacity = 0;
 
-            var root = (Border)XamlReader.Parse(Xaml);
+            root = (Border)XamlReader.Parse(Xaml);
             Content = root;
-            Art = (Border)root.FindName("Art");
+            ArtHost = (Grid)root.FindName("ArtHost");
+            ArtBack = (Border)root.FindName("ArtBack");
+            ArtFront = (Border)root.FindName("ArtFront");
             ArtGlyph = (TextBlock)root.FindName("ArtGlyph");
+            TitleBox = (Canvas)root.FindName("TitleBox");
+            ArtistBox = (Canvas)root.FindName("ArtistBox");
             TitleText = (TextBlock)root.FindName("TitleText");
             ArtistText = (TextBlock)root.FindName("ArtistText");
             CurText = (TextBlock)root.FindName("CurText");
@@ -427,13 +637,18 @@ namespace YTMusicMini
             Track = (Border)root.FindName("Track");
             Knob = (Ellipse)root.FindName("Knob");
 
-            // Drag the player by any empty area.
+            // Drag the player by any empty area; it snaps when let go near the bottom of the screen.
             root.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e)
             {
                 if (e.ButtonState != MouseButtonState.Pressed) return;
+                Anim.Stop(moveAnim);
                 try { DragMove(); } catch { }
-                if (Moved != null) Moved();
+                if (DragFinished != null) DragFinished();
             };
+
+            // Slightly see-through until the mouse is over it.
+            MouseEnter += delegate { if (IsVisible && !Hiding) FadeTo(1, 140, null); };
+            MouseLeave += delegate { if (IsVisible && !Hiding && !Dragging) FadeTo(IdleAlpha, 280, null); };
 
             Seek.MouseEnter += delegate { Track.Height = 4; Fill.Height = 4; Knob.Visibility = Visibility.Visible; };
             Seek.MouseLeave += delegate { if (!Dragging) { Track.Height = 3; Fill.Height = 3; Knob.Visibility = Visibility.Hidden; } };
@@ -460,6 +675,8 @@ namespace YTMusicMini
                 if (SeekRequested != null) SeekRequested(DragFraction);
                 e.Handled = true;
             };
+
+            ApplyTheme(Theme.Default(), false);
         }
 
         double FractionAt(double x)
@@ -480,14 +697,184 @@ namespace YTMusicMini
         {
             base.OnSourceInitialized(e);
             IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            // Keep it out of Alt+Tab and don't steal focus from whatever you're typing in.
+            // Out of Alt+Tab and never steals focus from what you're typing in.
             int ex = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
             Native.SetWindowLong(hwnd, Native.GWL_EXSTYLE, ex | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE);
-            // Windows 11 rounded corners and a subtle dark border (ignored on Windows 10).
-            int round = 2;
-            Native.DwmSetWindowAttribute(hwnd, 33, ref round, 4);
-            int border = 0x003A3A3A;
-            Native.DwmSetWindowAttribute(hwnd, 34, ref border, 4);
+        }
+
+        void SetAlpha(double a)
+        {
+            alpha = Math.Max(0, Math.Min(1, a));
+            Opacity = alpha;
+        }
+
+        void FadeTo(double target, double ms, Action done)
+        {
+            Anim.Stop(fadeAnim);
+            double from = alpha;
+            fadeAnim = Anim.Run(ms, p => SetAlpha(from + (target - from) * p), done);
+        }
+
+        // Fades in while sliding up a little into place.
+        public void AnimateIn(double left, double top)
+        {
+            Anim.Stop(fadeAnim);
+            Anim.Stop(moveAnim);
+            Hiding = false;
+            Left = left;
+            Top = top + 14;
+            if (!IsVisible) { SetAlpha(0); Show(); }
+            double fromTop = Top;
+            FadeTo(IsMouseOver ? 1 : IdleAlpha, 230, null);
+            moveAnim = Anim.Run(280, p => Top = fromTop + (top - fromTop) * p, null);
+            RefreshMarquees();
+        }
+
+        // Fades out while dipping down a little, then hides.
+        public void AnimateOut()
+        {
+            if (!IsVisible || Hiding) return;
+            Hiding = true;
+            Anim.Stop(moveAnim);
+            double fromTop = Top;
+            moveAnim = Anim.Run(170, p => Top = fromTop + 10 * p, null);
+            FadeTo(0, 170, delegate
+            {
+                Hide();
+                Top = fromTop;
+                Hiding = false;
+                StopMarquees();
+            });
+        }
+
+        public void GlideTo(double left, double top, Action done)
+        {
+            Anim.Stop(moveAnim);
+            double fromL = Left, fromT = Top;
+            moveAnim = Anim.Run(180, p => { Left = fromL + (left - fromL) * p; Top = fromT + (top - fromT) * p; }, done);
+        }
+
+        public void ApplyTheme(Theme target, bool animate)
+        {
+            Anim.Stop(themeAnim);
+            Theme from = shown ?? target;
+            if (!animate) { SetColors(target); return; }
+            themeAnim = Anim.Run(450, p => SetColors(Theme.Lerp(from, target, p)), null);
+        }
+
+        static Brush B(Color c)
+        {
+            var b = new SolidColorBrush(c);
+            b.Freeze();
+            return b;
+        }
+
+        // Fresh brushes every time (WPF locks brushes that styles and templates have used, so they
+        // can't be recolored in place). Called once per frame while a theme change animates.
+        void SetColors(Theme t)
+        {
+            shown = t;
+            root.Background = B(t.Bg);
+            root.BorderBrush = B(t.Border);
+            TitleText.Foreground = B(t.Title);
+            Brush sub = B(t.Sub), icon = B(t.Icon), time = B(t.Time);
+            ArtistText.Foreground = sub;
+            RestoreBtn.Foreground = sub;
+            CloseBtn.Foreground = sub;
+            ArtGlyph.Foreground = sub;
+            PrevBtn.Foreground = icon;
+            NextBtn.Foreground = icon;
+            PlayBtn.Foreground = B(t.PlayFg);
+            CurText.Foreground = time;
+            DurText.Foreground = time;
+            Track.Background = B(t.Track);
+            root.Resources["HoverBrush"] = B(t.Hover);
+            root.Resources["PressBrush"] = B(t.Press);
+            root.Resources["PlayBgBrush"] = B(t.PlayBg);
+            root.Resources["PlayBgHoverBrush"] = B(t.PlayBgHover);
+            Brush newPlaceholder = B(t.Placeholder);
+            if (ArtFront.Background == placeholder || ArtFront.Background == null) ArtFront.Background = newPlaceholder;
+            if (ArtBack.Background == placeholder) ArtBack.Background = newPlaceholder;
+            placeholder = newPlaceholder;
+        }
+
+        // Crossfades from the previous artwork to the new one.
+        public void SetArt(ImageSource img)
+        {
+            if (img == currentArt) return;
+            currentArt = img;
+            ArtGlyph.Visibility = img == null ? Visibility.Visible : Visibility.Collapsed;
+            ArtBack.Background = ArtFront.Background;
+            ArtFront.Background = img != null ? (Brush)new ImageBrush(img) { Stretch = Stretch.UniformToFill } : placeholder;
+            ArtFront.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380)));
+        }
+
+        public void SetText(string titleText, string artistText, bool animate)
+        {
+            if (TitleText.Text == titleText && ArtistText.Text == artistText) return;
+            TitleText.Text = titleText;
+            ArtistText.Text = artistText;
+            if (animate)
+            {
+                var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(260));
+                TitleText.BeginAnimation(OpacityProperty, fade);
+                ArtistText.BeginAnimation(OpacityProperty, fade);
+            }
+            RefreshMarquees();
+        }
+
+        public void RefreshMarquees()
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate
+            {
+                if (!IsVisible) return;
+                Marquee(TitleBox, TitleText, 0);
+                Marquee(ArtistBox, ArtistText, 1.1);
+            }));
+        }
+
+        public void StopMarquees()
+        {
+            foreach (var tb in new[] { TitleText, ArtistText })
+            {
+                var tt = (TranslateTransform)tb.RenderTransform;
+                tt.BeginAnimation(TranslateTransform.XProperty, null);
+                tt.X = 0;
+            }
+        }
+
+        // Text that doesn't fit slides to its end, rests, slides back, rests, and repeats.
+        // Text that fits stays still.
+        void Marquee(Canvas box, TextBlock tb, double delaySeconds)
+        {
+            var tt = (TranslateTransform)tb.RenderTransform;
+            tt.BeginAnimation(TranslateTransform.XProperty, null);
+            tt.X = 0;
+            tb.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            double over = tb.DesiredSize.Width - box.ActualWidth;
+            if (box.ActualWidth <= 0 || over <= 1)
+            {
+                box.OpacityMask = null;
+                return;
+            }
+            // Fade the right edge so the cut-off text looks intentional.
+            double fadeStart = Math.Max(0, 1 - MarqueeEndPad / box.ActualWidth);
+            var mask = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 0) };
+            mask.GradientStops.Add(new GradientStop(Colors.Black, 0));
+            mask.GradientStops.Add(new GradientStop(Colors.Black, fadeStart));
+            mask.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
+            box.OpacityMask = mask;
+
+            double distance = over + MarqueeEndPad;
+            double move = Math.Max(1.6, distance / MarqueeSpeed), hold = MarqueeHold;
+            var ease = new SineEase { EasingMode = EasingMode.EaseInOut };
+            var a = new DoubleAnimationUsingKeyFrames { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(delaySeconds) };
+            a.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            a.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(hold))));
+            a.KeyFrames.Add(new EasingDoubleKeyFrame(-distance, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(hold + move)), ease));
+            a.KeyFrames.Add(new LinearDoubleKeyFrame(-distance, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(2 * hold + move))));
+            a.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(2 * hold + 2 * move)), ease));
+            tt.BeginAnimation(TranslateTransform.XProperty, a);
         }
     }
 
@@ -537,6 +924,8 @@ namespace YTMusicMini
     {
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "YT Music Mini";
+        // Snapping: distance from the screen edge when snapped, and how close counts as "near".
+        const double SnapMargin = 14, SnapReach = 40;
 
         readonly Media media = new Media();
         readonly Settings settings = Settings.Load();
@@ -548,27 +937,34 @@ namespace YTMusicMini
         IntPtr yt = IntPtr.Zero;
         bool watching, dismissed, refreshing;
         DispatcherTimer timer;
-        int ticks;
+        int ticks, misses;
         string shownKey = "";
+        int shownArtVersion;
+
+        void CreateWindow()
+        {
+            win = new MiniWindow();
+            new WindowInteropHelper(win).EnsureHandle();
+        }
 
         public async void Start()
         {
             Log.Write("Started");
-            win = new MiniWindow();
+            CreateWindow();
             win.PlayBtn.Click += async delegate { await media.TogglePlay(); Render(); SoonRefresh(); };
             win.NextBtn.Click += async delegate { await media.Next(); SoonRefresh(); };
             win.PrevBtn.Click += async delegate { await media.Previous(); SoonRefresh(); };
             win.RestoreBtn.Click += delegate { RestoreYt(); };
             win.CloseBtn.Click += delegate { dismissed = true; HidePlayer(); };
-            win.Art.MouseLeftButtonUp += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; RestoreYt(); };
-            win.Art.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
+            win.ArtHost.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
+            win.ArtHost.MouseLeftButtonUp += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; RestoreYt(); };
             win.SeekRequested += async delegate(double f)
             {
                 if (media.Duration > TimeSpan.Zero) await media.SeekTo(TimeSpan.FromTicks((long)(media.Duration.Ticks * f)));
                 Render();
                 SoonRefresh();
             };
-            win.Moved += delegate { settings.Left = win.Left; settings.Top = win.Top; settings.Save(); };
+            win.DragFinished += OnDragFinished;
 
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             timer.Tick += delegate { Tick(); };
@@ -594,18 +990,19 @@ namespace YTMusicMini
         }
 
         // "--preview": shows the player with sample data (no media access), to check the look.
-        public void Preview()
+        public void Preview(double? hue)
         {
-            win = new MiniWindow();
+            CreateWindow();
             win.CloseBtn.Click += delegate { Application.Current.Shutdown(); };
-            win.TitleText.Text = "Sample song title that is fairly long";
-            win.ArtistText.Text = "Sample artist";
+            win.DragFinished += OnDragFinished;
+            win.SetText("Evadu Evadu (From the Original Motion Picture Soundtrack)", "Harvey Spector • Premam (Original Motion Picture Soundtrack)", false);
             win.CurText.Text = "1:32";
             win.DurText.Text = "3:48";
-            PlaceWindow();
-            win.Show();
-            win.UpdateLayout();
-            win.ShowFraction(0.4);
+            win.ApplyTheme(Theme.For(hue), false);
+            double l, t;
+            TargetPosition(out l, out t);
+            win.AnimateIn(l, t);
+            win.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate { win.ShowFraction(0.4); }));
         }
 
         void OnWinEvent(IntPtr h, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
@@ -621,6 +1018,7 @@ namespace YTMusicMini
             watching = true;
             dismissed = false;
             ticks = 0;
+            misses = 0;
             timer.Start();
             Refresh();
         }
@@ -657,27 +1055,34 @@ namespace YTMusicMini
             catch (Exception ex) { Log.Write("Refresh failed: " + ex.Message); }
             refreshing = false;
             if (!watching) return;
-            if (ok && !dismissed) { Render(); ShowPlayer(); }
-            else if (!ok) HidePlayer();
+            if (ok)
+            {
+                misses = 0;
+                if (!dismissed) { Render(); ShowPlayer(); }
+            }
+            // Between songs YouTube Music's media session briefly disappears; only hide if it stays gone.
+            else if (++misses >= 4 || !win.IsVisible) HidePlayer();
         }
 
         void ShowPlayer()
         {
-            if (win.IsVisible) return;
-            PlaceWindow();
-            win.Show();
-            win.UpdateLayout();
-            RenderPosition();
+            if (win.IsVisible && !win.Hiding) return;
+            double l, t;
+            TargetPosition(out l, out t);
+            win.AnimateIn(l, t);
+            win.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(RenderPosition));
         }
 
         void HidePlayer()
         {
-            if (win.IsVisible) win.Hide();
+            win.AnimateOut();
         }
 
-        void PlaceWindow()
+        // The saved spot if it's still on a screen, otherwise the bottom-right corner.
+        void TargetPosition(out double l, out double t)
         {
-            double l = settings.Left, t = settings.Top;
+            l = settings.Left;
+            t = settings.Top;
             bool onScreen = !double.IsNaN(l) && !double.IsNaN(t)
                 && l >= SystemParameters.VirtualScreenLeft - 20 && t >= SystemParameters.VirtualScreenTop - 20
                 && l + win.Width <= SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth + 20
@@ -685,33 +1090,58 @@ namespace YTMusicMini
             if (!onScreen)
             {
                 Rect wa = SystemParameters.WorkArea;
-                l = wa.Right - win.Width - 14;
-                t = wa.Bottom - win.Height - 14;
+                l = wa.Right - win.Width - SnapMargin;
+                t = wa.Bottom - win.Height - SnapMargin;
             }
-            win.Left = l;
-            win.Top = t;
+        }
+
+        Rect WorkArea()
+        {
+            var src = PresentationSource.FromVisual(win);
+            if (src == null || src.CompositionTarget == null) return SystemParameters.WorkArea;
+            var wa = WinForms.Screen.FromHandle(new WindowInteropHelper(win).Handle).WorkingArea;
+            Matrix m = src.CompositionTarget.TransformFromDevice;
+            return new Rect(m.Transform(new Point(wa.Left, wa.Top)), m.Transform(new Point(wa.Right, wa.Bottom)));
+        }
+
+        // Let go near the bottom edge and it settles onto it; near a bottom corner and it settles into
+        // the corner. Anywhere else it stays where it was dropped.
+        void OnDragFinished()
+        {
+            Rect wa = WorkArea();
+            double l = win.Left, t = win.Top;
+            double bottom = wa.Bottom - SnapMargin - win.Height;
+            double leftEdge = wa.Left + SnapMargin, rightEdge = wa.Right - SnapMargin - win.Width;
+            if (t >= bottom - SnapReach)
+            {
+                t = bottom;
+                if (l <= leftEdge + SnapReach) l = leftEdge;
+                else if (l >= rightEdge - SnapReach) l = rightEdge;
+            }
+            win.GlideTo(l, t, delegate
+            {
+                settings.Left = l;
+                settings.Top = t;
+                settings.Save();
+            });
         }
 
         void Render()
         {
             string key = media.Title + "\n" + media.Artist;
-            win.TitleText.Text = media.Title.Length > 0 ? media.Title : "Nothing playing";
-            win.ArtistText.Text = media.Artist;
+            bool changed = key != shownKey;
+            win.SetText(media.Title.Length > 0 ? media.Title : "Nothing playing", media.Artist, changed && win.IsVisible && shownKey.Length > 0);
+            shownKey = key;
             win.PlayBtn.Content = media.Playing ? "" : "";
             win.NextBtn.IsEnabled = media.CanNext;
             win.PrevBtn.IsEnabled = media.CanPrev;
             win.Seek.IsHitTestVisible = media.CanSeek;
-            if (media.Art != null)
+            if (media.ArtVersion != shownArtVersion)
             {
-                win.Art.Background = new ImageBrush(media.Art) { Stretch = Stretch.UniformToFill };
-                win.ArtGlyph.Visibility = Visibility.Collapsed;
+                shownArtVersion = media.ArtVersion;
+                win.SetArt(media.Art);
+                if (media.Art != null) win.ApplyTheme(Theme.For(media.Hue), win.IsVisible);
             }
-            else if (key != shownKey)
-            {
-                win.Art.Background = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33));
-                win.ArtGlyph.Visibility = Visibility.Visible;
-            }
-            shownKey = key;
             RenderPosition();
         }
 
@@ -810,10 +1240,16 @@ namespace YTMusicMini
         [STAThread]
         static void Main(string[] args)
         {
-            if (Array.IndexOf(args, "--preview") >= 0)
+            int previewAt = Array.IndexOf(args, "--preview");
+            if (previewAt >= 0)
             {
+                // Optional hue after the flag, e.g. "--preview 140" for a green album.
+                double? hue = null;
+                double h;
+                if (previewAt + 1 < args.Length && double.TryParse(args[previewAt + 1], System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out h)) hue = h;
                 var previewApp = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                previewApp.Startup += delegate { new Controller().Preview(); };
+                previewApp.Startup += delegate { new Controller().Preview(hue); };
                 previewApp.Run();
                 return;
             }

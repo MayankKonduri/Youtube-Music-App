@@ -5,12 +5,17 @@ a small always-on-top player appears in the corner of the screen; when you open 
 it disappears. Works on Windows 10 and 11.
 
 The mini player shows:
-- the song's artwork, title and artist
+- the song's artwork, title and artist (long titles and artist names slowly slide back and forth)
 - previous, play/pause and next buttons
-- a time bar you can click or drag to jump within the song
+- a red time bar you can click or drag to jump within the song
 - a button to reopen YouTube Music, and one to hide the player until the next minimize
 
-It never takes keyboard focus, stays out of Alt+Tab, and remembers where you drag it.
+Little touches:
+- **Colors from the artwork:** the background takes a light pastel tint of each song's main artwork color, and fades to the next song's color.
+- **Smooth animations:** it fades and slides in when you minimize, and the artwork crossfades between songs.
+- **See-through until hovered:** it sits at 90% opacity and turns solid under the mouse.
+- **Snaps to the bottom:** drop it near the bottom edge or a bottom corner and it glides into place. Anywhere else, it stays where you drop it, and it remembers the spot.
+- **Out of the way:** it never takes keyboard focus and stays out of Alt+Tab.
 
 ## How it works
 
@@ -33,8 +38,11 @@ The first run adds a "Start with Windows" entry for your user account. To turn i
 To check the design without touching any media:
 
 ```powershell
-.\bin\YTMusicMini.exe --preview
+.\bin\YTMusicMini.exe --preview        # neutral colors
+.\bin\YTMusicMini.exe --preview 140    # tinted as if the artwork were green (any hue 0-360)
 ```
+
+The background style lives in `Theme.Saturation` and `Theme.Lightness` in `MiniPlayer.cs`; a lightness under 0.5 switches to a dark player with light text.
 
 ## Files
 

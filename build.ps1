@@ -12,6 +12,11 @@ if (-not (Test-Path $ico)) { & (Join-Path $src 'make-icon.ps1') -Out $ico }
 $bin = Join-Path $src 'bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
 $exe = Join-Path $bin 'YTMusicMini.exe'
+
+# A running copy (including a --preview from .\bin) locks the files, so close it first.
+$running = Get-Process YTMusicMini -ErrorAction SilentlyContinue
+if ($running) { $running | Stop-Process -Force; $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue }
+
 $refs = "$fw\WPF\PresentationCore.dll", "$fw\WPF\PresentationFramework.dll", "$fw\WPF\WindowsBase.dll", "$fw\System.Xaml.dll",
         "$fw\System.Windows.Forms.dll", "$fw\System.Drawing.dll", "$fw\System.Runtime.dll", "$fw\System.Runtime.WindowsRuntime.dll",
         "$fw\System.Runtime.InteropServices.WindowsRuntime.dll", "$wm\Windows.Media.winmd", "$wm\Windows.Foundation.winmd", "$wm\Windows.Storage.winmd"
@@ -23,8 +28,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 if ($NoInstall) { return }
 
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\YT Music Mini'
-$running = Get-Process YTMusicMini -ErrorAction SilentlyContinue
-if ($running) { $running | Stop-Process -Force; $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item $exe (Join-Path $dest 'YTMusicMini.exe') -Force
 Start-Process (Join-Path $dest 'YTMusicMini.exe')
