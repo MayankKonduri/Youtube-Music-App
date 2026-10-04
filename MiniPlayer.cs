@@ -1047,7 +1047,7 @@ namespace YTMusicMini
         // The moving background: the artwork's main color on the left and its second color on the right,
         // meeting at a crisp, gently wavy edge that drifts and tilts slowly around the middle.
         // Edge: half-width of the blend between the colors, as a fraction of the player's width.
-        const double GradientMovement = 3.0, GradientSpeed = 1.0, GradientEdge = 0.09;
+        const double GradientMovement = 3.0, GradientSpeed = 2.0, GradientEdge = 0.09;
 
         // Where the edge is (fraction of the width) at height v (0 = top, 1 = bottom), t seconds in.
         static double EdgeAt(double v, double t, double aspect)
