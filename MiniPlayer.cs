@@ -927,14 +927,46 @@ namespace YTMusicMini
         }
 
         // Crossfades from the previous artwork to the new one.
-        public void SetArt(ImageSource img)
+        public void SetArt(ImageSource img) { SetArt(img, true); }
+
+        public void SetArt(ImageSource img, bool animate)
         {
             if (img == currentArt) return;
             currentArt = img;
             ArtGlyph.Visibility = img == null ? Visibility.Visible : Visibility.Collapsed;
             ArtBack.Background = ArtFront.Background;
             ArtFront.Background = img != null ? (Brush)new ImageBrush(img) { Stretch = Stretch.UniformToFill } : placeholder;
-            ArtFront.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380)));
+            if (animate) ArtFront.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380)));
+            else { ArtFront.BeginAnimation(OpacityProperty, null); ArtFront.Opacity = 1; }
+        }
+
+        // Draws the player (with a soft shadow) to a PNG at twice the normal resolution, for screenshots.
+        public void Snapshot(string path, double fraction)
+        {
+            Content = null;
+            TextOptions.SetTextFormattingMode(root, TextFormattingMode.Ideal);
+            const double pad = 24, scale = 2;
+            var shadow = new Border
+            {
+                CornerRadius = new CornerRadius(8),
+                Background = root.Background,
+                Margin = new Thickness(pad),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Direction = 270, Opacity = 0.25, Color = Colors.Black }
+            };
+            root.Margin = new Thickness(pad);
+            var stage = new Grid { Width = Width + 2 * pad, Height = Height + 2 * pad };
+            stage.Children.Add(shadow);
+            stage.Children.Add(root);
+            stage.Measure(new Size(stage.Width, stage.Height));
+            stage.Arrange(new Rect(0, 0, stage.Width, stage.Height));
+            stage.UpdateLayout();
+            ShowFraction(fraction);
+            stage.UpdateLayout();
+            var image = new RenderTargetBitmap((int)(stage.Width * scale), (int)(stage.Height * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
+            image.Render(stage);
+            var png = new PngBitmapEncoder();
+            png.Frames.Add(BitmapFrame.Create(image));
+            using (var file = File.Create(path)) png.Save(file);
         }
 
         public void SetText(string titleText, string artistText, bool animate)
@@ -971,11 +1003,13 @@ namespace YTMusicMini
         }
     }
 
-    // Text that doesn't fit slides to its end, rests, slides back, rests, and repeats; text that fits
-    // stays still. It moves in whole-pixel steps so the letters stay sharp the whole time.
+    // Text that doesn't fit slides to its end at a steady speed, rests, slides back, rests, and repeats;
+    // text that fits stays still. It moves in whole-pixel steps so the letters stay sharp the whole time.
     class Marquee
     {
-        const double Speed = 16, Hold = 2.4, EndPad = 14;   // pixels per second, seconds resting at each end
+        // Constant speed in pixels per second (75% of the earlier eased motion's top speed), and seconds
+        // resting at each end.
+        const double Speed = 18.85, Hold = 2.4, EndPad = 14;
 
         readonly Canvas box;
         readonly TextBlock text;
@@ -1000,7 +1034,7 @@ namespace YTMusicMini
             double over = text.DesiredSize.Width - box.ActualWidth;
             if (box.ActualWidth <= 0 || over <= 1) return;
             distance = Math.Ceiling(over + EndPad);
-            move = Math.Max(1.6, distance / Speed);
+            move = distance / Speed;
             delay = delaySeconds;
             fade.Visibility = Visibility.Visible;
             Active = true;
@@ -1023,15 +1057,13 @@ namespace YTMusicMini
             {
                 t %= 2 * Hold + 2 * move;
                 if (t < Hold) x = 0;
-                else if (t < Hold + move) x = -distance * Ease((t - Hold) / move);
+                else if (t < Hold + move) x = -Speed * (t - Hold);
                 else if (t < 2 * Hold + move) x = -distance;
-                else x = -distance * (1 - Ease((t - 2 * Hold - move) / move));
+                else x = -distance + Speed * (t - 2 * Hold - move);
             }
             x = Math.Round(x * pixelsPerDip) / pixelsPerDip;
             if (x != shift.X) shift.X = x;
         }
-
-        static double Ease(double p) { return 0.5 - 0.5 * Math.Cos(Math.PI * p); }
     }
 
     class Settings
@@ -1162,19 +1194,48 @@ namespace YTMusicMini
         }
 
         // "--preview": shows the player with sample data (no media access), to check the look.
-        public void Preview(double? hue)
+        // With "--snapshot <file.png>" it draws the player to an image instead and exits.
+        public void Preview(PreviewOptions o)
         {
             CreateWindow();
             win.CloseBtn.Click += delegate { Application.Current.Shutdown(); };
-            win.DragFinished += OnDragFinished;
-            win.SetText("Evadu Evadu (From the Original Motion Picture Soundtrack)", "Harvey Spector • Premam (Original Motion Picture Soundtrack)", false);
-            win.CurText.Text = "1:32";
-            win.DurText.Text = "3:48";
+            win.SetText(o.Title ?? "Evadu Evadu (From the Original Motion Picture Soundtrack)",
+                        o.Artist ?? "Harvey Spector • Premam (Original Motion Picture Soundtrack)", false);
+            win.CurText.Text = o.Position ?? "1:32";
+            win.DurText.Text = o.Duration ?? "3:48";
+            double? hue = o.Hue;
+            if (o.ArtPath != null)
+            {
+                var art = new BitmapImage();
+                art.BeginInit();
+                art.CacheOption = BitmapCacheOption.OnLoad;
+                art.UriSource = new Uri(System.IO.Path.GetFullPath(o.ArtPath));
+                art.DecodePixelHeight = 240;
+                art.EndInit();
+                art.Freeze();
+                win.SetArt(art, false);
+                hue = ArtColor.DominantHue(art);
+            }
             win.ApplyTheme(Theme.For(hue), false);
+            double fraction = Fraction(win.CurText.Text, win.DurText.Text);
+            if (o.SnapshotPath != null)
+            {
+                win.Snapshot(o.SnapshotPath, fraction);
+                Application.Current.Shutdown();
+                return;
+            }
             double l, t;
             TargetPosition(out l, out t);
             win.AnimateIn(l, t);
-            win.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate { win.ShowFraction(0.4); }));
+            win.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate { win.ShowFraction(fraction); }));
+        }
+
+        static double Fraction(string position, string duration)
+        {
+            TimeSpan p, d;
+            if (TimeSpan.TryParseExact(position, @"m\:ss", null, out p) && TimeSpan.TryParseExact(duration, @"m\:ss", null, out d) && d.Ticks > 0)
+                return Math.Min(1, (double)p.Ticks / d.Ticks);
+            return 0.4;
         }
 
         void OnWinEvent(IntPtr h, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
@@ -1407,6 +1468,36 @@ namespace YTMusicMini
         }
     }
 
+    // Sample data for "--preview": an optional hue right after the flag ("--preview 140" looks like a
+    // green album), plus --title, --artist, --art <image>, --position m:ss, --duration m:ss and
+    // --snapshot <file.png>.
+    class PreviewOptions
+    {
+        public double? Hue;
+        public string Title, Artist, ArtPath, Position, Duration, SnapshotPath;
+
+        public static PreviewOptions Parse(string[] args, int at)
+        {
+            var o = new PreviewOptions();
+            double h;
+            if (at + 1 < args.Length && double.TryParse(args[at + 1], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out h)) o.Hue = h;
+            o.Title = Value(args, "--title");
+            o.Artist = Value(args, "--artist");
+            o.ArtPath = Value(args, "--art");
+            o.Position = Value(args, "--position");
+            o.Duration = Value(args, "--duration");
+            o.SnapshotPath = Value(args, "--snapshot");
+            return o;
+        }
+
+        static string Value(string[] args, string name)
+        {
+            int i = Array.IndexOf(args, name);
+            return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        }
+    }
+
     static class Program
     {
         [STAThread]
@@ -1415,13 +1506,9 @@ namespace YTMusicMini
             int previewAt = Array.IndexOf(args, "--preview");
             if (previewAt >= 0)
             {
-                // Optional hue after the flag, e.g. "--preview 140" for a green album.
-                double? hue = null;
-                double h;
-                if (previewAt + 1 < args.Length && double.TryParse(args[previewAt + 1], System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out h)) hue = h;
+                var options = PreviewOptions.Parse(args, previewAt);
                 var previewApp = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                previewApp.Startup += delegate { new Controller().Preview(hue); };
+                previewApp.Startup += delegate { new Controller().Preview(options); };
                 previewApp.Run();
                 return;
             }
