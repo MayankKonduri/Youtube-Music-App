@@ -408,6 +408,52 @@ namespace YTMusicMini
         public async Task Init()
         {
             manager = await WinRt.Run(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
+            onProps = delegate { RaiseChanged(); };
+            onPlayback = delegate { RaiseChanged(); };
+            onTimeline = delegate { RaiseChanged(); };
+            try
+            {
+                manager.SessionsChanged += delegate { RaiseChanged(); };
+                manager.CurrentSessionChanged += delegate { RaiseChanged(); };
+            }
+            catch (Exception ex) { Log.Write("Session events unavailable: " + ex.Message); }
+        }
+
+        // Windows reports song, play/pause and position changes as they happen (on a background thread);
+        // listeners re-read the state right away instead of waiting for the next periodic check.
+        public event Action Changed;
+        GlobalSystemMediaTransportControlsSession watched;
+        global::Windows.Foundation.TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs> onProps;
+        global::Windows.Foundation.TypedEventHandler<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs> onPlayback;
+        global::Windows.Foundation.TypedEventHandler<GlobalSystemMediaTransportControlsSession, TimelinePropertiesChangedEventArgs> onTimeline;
+
+        void RaiseChanged()
+        {
+            var handler = Changed;
+            if (handler != null) handler();
+        }
+
+        void Watch(GlobalSystemMediaTransportControlsSession s)
+        {
+            if (s == watched || onProps == null) return;
+            try
+            {
+                if (watched != null)
+                {
+                    watched.MediaPropertiesChanged -= onProps;
+                    watched.PlaybackInfoChanged -= onPlayback;
+                    watched.TimelinePropertiesChanged -= onTimeline;
+                }
+            }
+            catch { }
+            watched = s;
+            try
+            {
+                s.MediaPropertiesChanged += onProps;
+                s.PlaybackInfoChanged += onPlayback;
+                s.TimelinePropertiesChanged += onTimeline;
+            }
+            catch (Exception ex) { Log.Write("Song events unavailable: " + ex.Message); }
         }
 
         static bool IsBrowser(string id)
@@ -462,6 +508,7 @@ namespace YTMusicMini
             }
             if (session == null) Log.Write("Using session '" + bestProps.Title + "' for window '" + windowTitle + "'");
             session = best;
+            Watch(best);
 
             Title = bestProps.Title ?? "";
             Artist = bestProps.Artist ?? "";
@@ -488,6 +535,11 @@ namespace YTMusicMini
                         uint n = await WinRt.Run<uint>(reader.LoadAsync((uint)stream.Size));
                         var bytes = new byte[n];
                         reader.ReadBytes(bytes);
+                        // Right after a song change the browser can still be offering the previous song's
+                        // artwork; keep checking a few times before accepting identical artwork.
+                        if (artBytes != null && SameBytes(bytes, artBytes) && ++artRetries < 6) return true;
+                        artRetries = 0;
+                        artBytes = bytes;
                         var bmp = new BitmapImage();
                         bmp.BeginInit();
                         bmp.CacheOption = BitmapCacheOption.OnLoad;
@@ -508,6 +560,16 @@ namespace YTMusicMini
                     ArtVersion++;
                 }
             }
+            return true;
+        }
+
+        byte[] artBytes;
+        int artRetries;
+
+        static bool SameBytes(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
             return true;
         }
 
@@ -1003,20 +1065,23 @@ namespace YTMusicMini
         }
     }
 
-    // Text that doesn't fit slides to its end at a steady speed, rests, slides back, rests, and repeats;
-    // text that fits stays still. It moves in whole-pixel steps so the letters stay sharp the whole time.
+    // Text that doesn't fit slides to its end, rests, slides back, rests, and repeats; text that fits
+    // stays still. It moves in whole-pixel steps so the letters stay sharp the whole time.
     class Marquee
     {
-        // Constant speed in pixels per second (75% of the earlier eased motion's top speed), and seconds
-        // resting at each end.
-        const double Speed = 18.85, Hold = 2.4, EndPad = 14;
+        // Speeds in pixels per second, relative to the original (eased) motion's top speed of about
+        // 25 px/s: 70% through the middle 60% of each slide, 40% through the first and last 20% of it.
+        const double OriginalSpeed = 16 * Math.PI / 2;
+        const double CruiseSpeed = 0.70 * OriginalSpeed, EdgeSpeed = 0.40 * OriginalSpeed, EdgePart = 0.20;
+        // Seconds resting at each end, and extra pixels to slide so the last letter clears the edge fade.
+        const double Hold = 2.4, EndPad = 14;
 
         readonly Canvas box;
         readonly TextBlock text;
         readonly Rectangle fade;
         readonly TranslateTransform shift = new TranslateTransform();
         readonly Stopwatch clock = new Stopwatch();
-        double distance, move, delay;
+        double distance, edgeTime, cruiseTime, move, delay;
         public bool Active;
 
         public Marquee(Canvas box, TextBlock text, Rectangle fade)
@@ -1034,7 +1099,9 @@ namespace YTMusicMini
             double over = text.DesiredSize.Width - box.ActualWidth;
             if (box.ActualWidth <= 0 || over <= 1) return;
             distance = Math.Ceiling(over + EndPad);
-            move = distance / Speed;
+            edgeTime = EdgePart * distance / EdgeSpeed;
+            cruiseTime = (1 - 2 * EdgePart) * distance / CruiseSpeed;
+            move = 2 * edgeTime + cruiseTime;
             delay = delaySeconds;
             fade.Visibility = Visibility.Visible;
             Active = true;
@@ -1057,12 +1124,20 @@ namespace YTMusicMini
             {
                 t %= 2 * Hold + 2 * move;
                 if (t < Hold) x = 0;
-                else if (t < Hold + move) x = -Speed * (t - Hold);
+                else if (t < Hold + move) x = -Travelled(t - Hold);
                 else if (t < 2 * Hold + move) x = -distance;
-                else x = -distance + Speed * (t - 2 * Hold - move);
+                else x = -distance + Travelled(t - 2 * Hold - move);
             }
             x = Math.Round(x * pixelsPerDip) / pixelsPerDip;
             if (x != shift.X) shift.X = x;
+        }
+
+        // How far the text has slid t seconds into a slide: slow, then cruising, then slow again.
+        double Travelled(double t)
+        {
+            if (t <= edgeTime) return EdgeSpeed * t;
+            if (t <= edgeTime + cruiseTime) return EdgePart * distance + CruiseSpeed * (t - edgeTime);
+            return Math.Min(distance, (1 - EdgePart) * distance + EdgeSpeed * (t - edgeTime - cruiseTime));
         }
     }
 
@@ -1131,9 +1206,10 @@ namespace YTMusicMini
         Native.WinEventProc hookProc;
         IntPtr hook;
         IntPtr yt = IntPtr.Zero;
-        bool watching, dismissed, refreshing;
+        bool watching, dismissed, refreshing, refreshAgain;
+        DateTime missingSince = DateTime.MinValue;
         DispatcherTimer timer;
-        int ticks, misses;
+        int ticks;
         string shownKey = "";
         int shownArtVersion;
 
@@ -1147,9 +1223,9 @@ namespace YTMusicMini
         {
             Log.Write("Started");
             CreateWindow();
-            win.PlayBtn.Click += async delegate { await media.TogglePlay(); Render(); SoonRefresh(); };
-            win.NextBtn.Click += async delegate { await media.Next(); SoonRefresh(); };
-            win.PrevBtn.Click += async delegate { await media.Previous(); SoonRefresh(); };
+            win.PlayBtn.Click += async delegate { await media.TogglePlay(); Render(); SoonRefresh(300); };
+            win.NextBtn.Click += async delegate { await media.Next(); Refresh(); SoonRefresh(300); };
+            win.PrevBtn.Click += async delegate { await media.Previous(); Refresh(); SoonRefresh(300); };
             win.RestoreBtn.Click += delegate { RestoreYt(); };
             win.CloseBtn.Click += delegate { dismissed = true; HidePlayer(); };
             win.ArtHost.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
@@ -1158,7 +1234,7 @@ namespace YTMusicMini
             {
                 if (media.Duration > TimeSpan.Zero) await media.SeekTo(TimeSpan.FromTicks((long)(media.Duration.Ticks * f)));
                 Render();
-                SoonRefresh();
+                SoonRefresh(300);
             };
             win.DragFinished += OnDragFinished;
 
@@ -1181,6 +1257,8 @@ namespace YTMusicMini
 
             media.AppId = settings.AppId;
             media.AppIdLearned += delegate { settings.AppId = media.AppId; settings.Save(); };
+            // Song changes arrive on a background thread; re-check on the UI thread straight away.
+            media.Changed += delegate { win.Dispatcher.BeginInvoke(new Action(Refresh)); };
             try { await media.Init(); }
             catch (Exception ex) { Log.Write("Media init failed: " + ex.Message); }
 
@@ -1252,7 +1330,7 @@ namespace YTMusicMini
             watching = true;
             dismissed = false;
             ticks = 0;
-            misses = 0;
+            missingSince = DateTime.MinValue;
             timer.Start();
             Refresh();
         }
@@ -1273,16 +1351,18 @@ namespace YTMusicMini
             else if (win.IsVisible) RenderPosition();
         }
 
-        void SoonRefresh()
+        // A follow-up check shortly after a button press, in case the change event comes late.
+        void SoonRefresh(int ms)
         {
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
             t.Tick += delegate { t.Stop(); Refresh(); };
             t.Start();
         }
 
         async void Refresh()
         {
-            if (refreshing || !watching) return;
+            if (!watching) return;
+            if (refreshing) { refreshAgain = true; return; }
             refreshing = true;
             bool ok = false;
             try { ok = await media.Refresh(Native.Title(yt)); }
@@ -1291,11 +1371,17 @@ namespace YTMusicMini
             if (!watching) return;
             if (ok)
             {
-                misses = 0;
+                missingSince = DateTime.MinValue;
                 if (!dismissed) { Render(); ShowPlayer(); }
             }
-            // Between songs YouTube Music's media session briefly disappears; only hide if it stays gone.
-            else if (++misses >= 4 || !win.IsVisible) HidePlayer();
+            else
+            {
+                // Between songs YouTube Music's media session briefly disappears; only hide if it stays gone.
+                if (missingSince == DateTime.MinValue) missingSince = DateTime.Now;
+                if (!win.IsVisible || DateTime.Now - missingSince > TimeSpan.FromSeconds(3)) HidePlayer();
+            }
+            // Something changed while this check was running: check again so the newest state shows.
+            if (refreshAgain) { refreshAgain = false; Refresh(); }
         }
 
         void ShowPlayer()

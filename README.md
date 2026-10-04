@@ -10,7 +10,7 @@ it disappears. Works on Windows 10 and 11.
 <p align="center"><sub>The artwork in this screenshot is an original placeholder, not the real album cover.</sub></p>
 
 The mini player shows:
-- the song's artwork, title and artist (long titles and artist names slide back and forth at a steady pace)
+- the song's artwork, title and artist (long titles and artist names slide back and forth, slower near each end)
 - previous, play/pause and next buttons
 - a red time bar you can click or drag to jump within the song
 - a button to reopen YouTube Music, and one to hide the player until the next minimize
