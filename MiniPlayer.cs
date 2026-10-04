@@ -308,7 +308,7 @@ namespace YTMusicMini
     {
         // The background: a gradient from the artwork's main color (left) to its second color (right,
         // a little deeper). With only one main color, the right side uses a nearby, shifted hue.
-        public const double BgLightness = 0.84, Bg2Lightness = 0.79, BgChroma = 0.11, SecondHueShift = 35;
+        public const double BgLightness = 0.81, Bg2Lightness = 0.76, BgChroma = 0.19, SecondHueShift = 35;
         // Lightness and colorfulness of the artwork placeholder and border, from the main color.
         const double ShadeLightness = 0.79, ShadeChroma = 0.085;
 
