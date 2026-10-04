@@ -17,6 +17,16 @@ Little touches:
 - **Snaps to the bottom:** drop it near the bottom edge or a bottom corner and it glides into place. Anywhere else, it stays where you drop it. It remembers the spot, and a snapped corner stays that corner even if monitors or scaling change.
 - **Out of the way:** it never takes keyboard focus and stays out of Alt+Tab.
 
+## Download
+
+1. Make sure YouTube Music is installed as an app: open [music.youtube.com](https://music.youtube.com) in Chrome or Edge and click **Open in app** (or the install icon in the address bar).
+2. Download **YTMusicMini.exe** from the [latest release](https://github.com/MayankKonduri/Youtube-Music-App/releases/latest).
+3. Move it somewhere permanent, such as your Documents folder. It starts with Windows from wherever it's kept.
+4. Double-click it. The app isn't code-signed, so Windows shows "Windows protected your PC": click **More info**, then **Run anyway**.
+5. A notification confirms it's running. Minimize YouTube Music to see the mini player.
+
+Nothing else needs installing: it uses .NET Framework 4.8, which is built into Windows 10 and 11.
+
 ## How it works
 
 - **The app:** YouTube Music installed from the browser ("Open in app" on music.youtube.com in Chrome, Edge or Brave).
@@ -24,7 +34,7 @@ Little touches:
 - **Song info and controls:** these come from Windows' own media controls (the same source as the volume flyout), so nothing inside YouTube Music is changed and you stay signed in as usual.
 - **Choosing the right session:** the session reported by the installed web app is matched against the song title in the YouTube Music window, so a video playing in an ordinary browser tab is ignored. Once found, the app's session id is remembered, so a paused song (whose window title is just "YouTube Music") is still recognized.
 
-## Build and install
+## Build it yourself
 
 No SDK is needed. It's built with the C# compiler that ships with Windows (.NET Framework 4.x).
 
@@ -57,5 +67,5 @@ Settings and a small log are kept in `%LOCALAPPDATA%\YT Music Mini`.
 
 ## Uninstall
 
-1. Right-click the tray icon, untick **Start with Windows**, then choose **Exit**.
-2. Delete `%LOCALAPPDATA%\Programs\YT Music Mini` and `%LOCALAPPDATA%\YT Music Mini`.
+1. Right-click the tray icon (by the clock, possibly under the **^** arrow), untick **Start with Windows**, then choose **Exit**.
+2. Delete `YTMusicMini.exe` (or `%LOCALAPPDATA%\Programs\YT Music Mini` if you used `build.ps1`) and the settings folder `%LOCALAPPDATA%\YT Music Mini`.

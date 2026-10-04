@@ -30,6 +30,12 @@ using AsyncStatus = Windows.Foundation.AsyncStatus;
 // Targeting 4.8 turns on WPF's modern behavior, including re-rendering at each monitor's own scaling
 // (together with the per-monitor DPI setting in app.manifest).
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
+// Shown in the file's Properties and in Task Manager.
+[assembly: System.Reflection.AssemblyTitle("YT Music Mini")]
+[assembly: System.Reflection.AssemblyDescription("Floating mini player for the YouTube Music app")]
+[assembly: System.Reflection.AssemblyProduct("YT Music Mini")]
+[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
 
 namespace YTMusicMini
 {
@@ -1130,10 +1136,16 @@ namespace YTMusicMini
             SetupTray();
             if (!settings.StartupConfigured)
             {
+                // First run: start with Windows, and say it's running (otherwise nothing visible happens
+                // until YouTube Music is minimized).
                 SetStartup(true);
                 settings.StartupConfigured = true;
                 settings.Save();
+                tray.ShowBalloonTip(8000, "YT Music Mini is running",
+                    "Minimize YouTube Music to see the mini player. Right-click this tray icon for options.", WinForms.ToolTipIcon.None);
             }
+            // If the app was moved since, point "Start with Windows" at its new location.
+            else if (IsStartupEnabled()) SetStartup(true);
 
             media.AppId = settings.AppId;
             media.AppIdLearned += delegate { settings.AppId = media.AppId; settings.Save(); };
