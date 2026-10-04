@@ -19,7 +19,7 @@ The mini player shows:
 - a button to reopen YouTube Music, and one to hide the player until the next minimize
 
 Little touches:
-- **Colors from the artwork:** the artwork's main color fills the left and its second color the right, meeting at a crisp, gently wavy edge that slowly drifts and tilts around the middle. Both are light, vivid pastels built in OKLCH (a color model where equal lightness looks equally bright). Covers with a single main color get a nearby shifted shade on the right. It fades to the next song's colors.
+- **Colors from the artwork:** the artwork's main color fills the left and its second color the right, meeting at a soft, wavy edge that slowly drifts and tilts around the middle. Both are light, vivid pastels built in OKLCH (a color model where equal lightness looks equally bright). Covers with a single main color get a nearby shifted shade on the right. It fades to the next song's colors.
 - **Smooth animations:** it fades and slides in when you minimize, and the artwork crossfades between songs.
 - **Sharp on every monitor:** it renders at each monitor's own display scaling, with pixel-snapped text that stays crisp while it scrolls.
 - **Snaps to the bottom:** drop it near the bottom edge or a bottom corner and it glides into place. Anywhere else, it stays where you drop it. It remembers the spot, and a snapped corner stays that corner even if monitors or scaling change.
