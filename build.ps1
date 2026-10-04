@@ -20,7 +20,9 @@ if ($running) { $running | Stop-Process -Force; $running | Wait-Process -Timeout
 $refs = "$fw\WPF\PresentationCore.dll", "$fw\WPF\PresentationFramework.dll", "$fw\WPF\WindowsBase.dll", "$fw\System.Xaml.dll",
         "$fw\System.Windows.Forms.dll", "$fw\System.Drawing.dll", "$fw\System.Runtime.dll", "$fw\System.Runtime.WindowsRuntime.dll",
         "$fw\System.Runtime.InteropServices.WindowsRuntime.dll", "$wm\Windows.Media.winmd", "$wm\Windows.Foundation.winmd", "$wm\Windows.Storage.winmd"
-$cscArgs = @('-nologo', '-target:winexe', '-optimize+', "-out:$exe", "-win32icon:$ico", "-resource:$ico,app.ico") +
+$manifest = Join-Path $src 'app.manifest'
+$cscArgs = @('-nologo', '-target:winexe', '-optimize+', '-codepage:65001', "-out:$exe", "-win32icon:$ico", "-win32manifest:$manifest",
+             "-resource:$ico,app.ico") +
            ($refs | ForEach-Object { "-r:$_" }) + (Join-Path $src 'MiniPlayer.cs')
 & "$fw\csc.exe" @cscArgs | Where-Object { $_ -notmatch 'only supports language versions up to C# 5|newer versions of the C# programming language|go.microsoft.com/fwlink/\?LinkID=533240|^\s*$' }
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }

@@ -11,10 +11,10 @@ The mini player shows:
 - a button to reopen YouTube Music, and one to hide the player until the next minimize
 
 Little touches:
-- **Colors from the artwork:** the background takes a light pastel tint of each song's main artwork color, and fades to the next song's color.
+- **Colors from the artwork:** the background is a vivid pastel of each song's main artwork color, built in OKLCH (a color model where equal lightness looks equally bright), so every color gets the same light-but-colorful look. It fades to the next song's color.
 - **Smooth animations:** it fades and slides in when you minimize, and the artwork crossfades between songs.
-- **See-through until hovered:** it sits at 90% opacity and turns solid under the mouse.
-- **Snaps to the bottom:** drop it near the bottom edge or a bottom corner and it glides into place. Anywhere else, it stays where you drop it, and it remembers the spot.
+- **Sharp on every monitor:** it renders at each monitor's own display scaling, with pixel-snapped text that stays crisp while it scrolls.
+- **Snaps to the bottom:** drop it near the bottom edge or a bottom corner and it glides into place. Anywhere else, it stays where you drop it. It remembers the spot, and a snapped corner stays that corner even if monitors or scaling change.
 - **Out of the way:** it never takes keyboard focus and stays out of Alt+Tab.
 
 ## How it works
@@ -22,7 +22,7 @@ Little touches:
 - **The app:** YouTube Music installed from the browser ("Open in app" on music.youtube.com in Chrome, Edge or Brave).
 - **Detecting minimize:** the mini player listens for Windows minimize/restore events on that window.
 - **Song info and controls:** these come from Windows' own media controls (the same source as the volume flyout), so nothing inside YouTube Music is changed and you stay signed in as usual.
-- **Choosing the right session:** the session reported by the installed web app is matched against the song title in the YouTube Music window, so a video playing in an ordinary browser tab is ignored.
+- **Choosing the right session:** the session reported by the installed web app is matched against the song title in the YouTube Music window, so a video playing in an ordinary browser tab is ignored. Once found, the app's session id is remembered, so a paused song (whose window title is just "YouTube Music") is still recognized.
 
 ## Build and install
 
@@ -42,7 +42,7 @@ To check the design without touching any media:
 .\bin\YTMusicMini.exe --preview 140    # tinted as if the artwork were green (any hue 0-360)
 ```
 
-The background style lives in `Theme.Saturation` and `Theme.Lightness` in `MiniPlayer.cs`; a lightness under 0.5 switches to a dark player with light text.
+The background style lives in `Theme.BgLightness` and `Theme.BgChroma` in `MiniPlayer.cs`.
 
 ## Files
 
@@ -51,6 +51,7 @@ The background style lives in `Theme.Saturation` and `Theme.Lightness` in `MiniP
 | `MiniPlayer.cs` | The whole app (C# 5, WPF) |
 | `build.ps1` | Compile, install and start |
 | `make-icon.ps1` | Draws `app.ico` (run automatically by the build) |
+| `app.manifest` | Tells Windows the app handles per-monitor display scaling |
 
 Settings and a small log are kept in `%LOCALAPPDATA%\YT Music Mini`.
 

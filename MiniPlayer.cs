@@ -27,6 +27,10 @@ using Windows.Storage.Streams;
 using WinForms = System.Windows.Forms;
 using AsyncStatus = Windows.Foundation.AsyncStatus;
 
+// Targeting 4.8 turns on WPF's modern behavior, including re-rendering at each monitor's own scaling
+// (together with the per-monitor DPI setting in app.manifest).
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
+
 namespace YTMusicMini
 {
     static class Native
@@ -54,6 +58,29 @@ namespace YTMusicMini
         public const int SW_RESTORE = 9, GWL_EXSTYLE = -20;
         public const int WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000;
         public const uint GW_OWNER = 4;
+
+        [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+        [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+        [DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint dpiX, out uint dpiY);
+
+        public struct RECT { public int Left, Top, Right, Bottom; }
+        public struct POINT { public int X, Y; public POINT(int x, int y) { X = x; Y = y; } }
+        public const uint SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, MONITOR_DEFAULTTONEAREST = 2;
+
+        // Display scaling of the monitor at a screen point (1.0 = 100%, 1.5 = 150%).
+        public static double ScaleAt(int x, int y)
+        {
+            try
+            {
+                uint dx, dy;
+                IntPtr mon = MonitorFromPoint(new POINT(x, y), MONITOR_DEFAULTTONEAREST);
+                if (GetDpiForMonitor(mon, 0, out dx, out dy) == 0 && dx > 0) return dx / 96.0;
+            }
+            catch { }
+            return 1;
+        }
 
         public static string Title(IntPtr hwnd)
         {
@@ -227,19 +254,46 @@ namespace YTMusicMini
         }
     }
 
-    // All colors of the player, derived from the artwork's hue. The time bar always stays red.
+    // All colors of the player, derived from the artwork's main color. The time bar always stays red.
+    // Colors are built in OKLCH (lightness, chroma = colorfulness, hue): equal lightness there looks
+    // equally bright to the eye, so every artwork color gets the same light-but-colorful look.
     class Theme
     {
-        // The background style: saturation and lightness applied to the artwork's main hue.
-        // Lightness under 0.5 gives a dark player with light text; above gives a light one with dark text.
-        public const double Saturation = 0.38, Lightness = 0.86;
+        // The background style ("vivid pastel"): its lightness and colorfulness.
+        public const double BgLightness = 0.86, BgChroma = 0.085;
 
         public Color Bg, Border, Title, Sub, Icon, PlayBg, PlayBgHover, PlayFg, Track, Time, Hover, Press, Placeholder;
 
-        static Color Hsl(double h, double s, double l)
+        public static Theme For(double? artHue)
         {
-            l = Math.Max(0, Math.Min(1, l));
-            double c = (1 - Math.Abs(2 * l - 1)) * s, hp = (h % 360) / 60.0, x = c * (1 - Math.Abs(hp % 2 - 1)), m = l - c / 2;
+            double h = 0, c = 0;
+            if (artHue.HasValue)
+            {
+                // The artwork hue is an HSV hue; take a typical color of that hue and find its OKLCH hue.
+                double[] rgb = Hsv(artHue.Value, 0.75, 0.85);
+                h = OkHue(rgb[0], rgb[1], rgb[2]);
+                c = 1;
+            }
+            var t = new Theme();
+            t.Bg = Ok(BgLightness, BgChroma * c, h);
+            t.Border = Ok(BgLightness - 0.07, BgChroma * c, h);
+            t.Title = Ok(0.25, 0.04 * c, h);
+            t.Sub = Ok(0.42, 0.04 * c, h);
+            t.Icon = Ok(0.27, 0.04 * c, h);
+            t.PlayBg = Ok(0.27, 0.05 * c, h);
+            t.PlayBgHover = Ok(0.36, 0.05 * c, h);
+            t.PlayFg = Colors.White;
+            t.Track = Color.FromArgb(0x29, 0, 0, 0);
+            t.Time = Ok(0.42, 0.04 * c, h);
+            t.Hover = Color.FromArgb(0x1A, 0, 0, 0);
+            t.Press = Color.FromArgb(0x30, 0, 0, 0);
+            t.Placeholder = Ok(BgLightness - 0.07, BgChroma * c, h);
+            return t;
+        }
+
+        static double[] Hsv(double h, double s, double v)
+        {
+            double c = v * s, hp = (h % 360) / 60.0, x = c * (1 - Math.Abs(hp % 2 - 1)), m = v - c;
             double r = 0, g = 0, b = 0;
             if (hp < 1) { r = c; g = x; }
             else if (hp < 2) { r = x; g = c; }
@@ -247,30 +301,44 @@ namespace YTMusicMini
             else if (hp < 4) { g = x; b = c; }
             else if (hp < 5) { r = x; b = c; }
             else { r = c; b = x; }
-            return Color.FromRgb((byte)Math.Round((r + m) * 255), (byte)Math.Round((g + m) * 255), (byte)Math.Round((b + m) * 255));
+            return new[] { r + m, g + m, b + m };
         }
 
-        public static Theme For(double? hue)
+        static double ToLinear(double c) { return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4); }
+        static double ToGamma(double c) { return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.Pow(c, 1 / 2.4) - 0.055; }
+        static byte ToByte(double v) { return (byte)Math.Round(Math.Max(0, Math.Min(1, v)) * 255); }
+
+        // OKLCH hue (degrees) of an sRGB color (channels 0..1).
+        static double OkHue(double r, double g, double b)
         {
-            double h = hue.HasValue ? hue.Value : 0;
-            double tint = hue.HasValue ? 1 : 0;
-            double s = Saturation * tint, l = Lightness;
-            bool dark = l < 0.5;
-            var t = new Theme();
-            t.Bg = Hsl(h, s, l);
-            t.Border = dark ? Hsl(h, s, l + 0.12) : Hsl(h, s, l - 0.09);
-            t.Title = dark ? Colors.White : Hsl(h, 0.30 * tint, 0.13);
-            t.Sub = dark ? Hsl(h, 0.12 * tint, 0.74) : Hsl(h, 0.14 * tint, 0.36);
-            t.Icon = dark ? Colors.White : Hsl(h, 0.30 * tint, 0.16);
-            t.PlayBg = dark ? Colors.White : Hsl(h, 0.30 * tint, 0.16);
-            t.PlayBgHover = dark ? Color.FromRgb(0xE3, 0xE3, 0xE3) : Hsl(h, 0.30 * tint, 0.28);
-            t.PlayFg = dark ? Color.FromRgb(0x11, 0x11, 0x11) : Colors.White;
-            t.Track = dark ? Color.FromArgb(0x38, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x29, 0, 0, 0);
-            t.Time = dark ? Hsl(h, 0.10 * tint, 0.70) : Hsl(h, 0.12 * tint, 0.38);
-            t.Hover = dark ? Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x1A, 0, 0, 0);
-            t.Press = dark ? Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF) : Color.FromArgb(0x30, 0, 0, 0);
-            t.Placeholder = dark ? Hsl(h, s, l + 0.08) : Hsl(h, s, l - 0.08);
-            return t;
+            r = ToLinear(r); g = ToLinear(g); b = ToLinear(b);
+            double l = Math.Pow(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b, 1.0 / 3);
+            double m = Math.Pow(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b, 1.0 / 3);
+            double s = Math.Pow(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b, 1.0 / 3);
+            double A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+            double B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+            double h = Math.Atan2(B, A) * 180 / Math.PI;
+            return h < 0 ? h + 360 : h;
+        }
+
+        // The screen color for an OKLCH value, easing off the colorfulness if the screen can't show it.
+        static Color Ok(double L, double C, double h)
+        {
+            double R = 0, G = 0, Bl = 0;
+            for (int i = 0; i < 25; i++)
+            {
+                double a = C * Math.Cos(h * Math.PI / 180), b = C * Math.Sin(h * Math.PI / 180);
+                double l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+                double m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+                double s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+                double l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+                R = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+                G = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+                Bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+                if (R >= -0.001 && R <= 1.001 && G >= -0.001 && G <= 1.001 && Bl >= -0.001 && Bl <= 1.001) break;
+                C *= 0.9;
+            }
+            return Color.FromRgb(ToByte(ToGamma(Math.Max(0, R))), ToByte(ToGamma(Math.Max(0, G))), ToByte(ToGamma(Math.Max(0, Bl))));
         }
 
         public static Theme Default()
@@ -317,7 +385,11 @@ namespace YTMusicMini
         GlobalSystemMediaTransportControlsSessionManager manager;
         GlobalSystemMediaTransportControlsSession session;
         string artKey = "";
-        string appId = "";
+        // YouTube Music's media-session id once identified (saved in settings, so it's known even when
+        // a paused song leaves the window title as just "YouTube Music").
+        public string AppId = "";
+        public event Action AppIdLearned;
+        string lastMissLog = "";
 
         public string Title = "", Artist = "";
         public bool Playing, CanSeek, CanNext, CanPrev;
@@ -346,7 +418,9 @@ namespace YTMusicMini
             if (manager == null) return false;
             GlobalSystemMediaTransportControlsSession best = null;
             GlobalSystemMediaTransportControlsSessionMediaProperties bestProps = null;
-            int bestScore = 0;
+            int bestScore = 0, webApps = 0;
+            GlobalSystemMediaTransportControlsSession onlyWebApp = null;
+            GlobalSystemMediaTransportControlsSessionMediaProperties onlyWebAppProps = null;
             var seen = new List<string>();
             foreach (var s in manager.GetSessions())
             {
@@ -359,15 +433,24 @@ namespace YTMusicMini
                 seen.Add(id + ":" + t);
                 bool titleMatch = t.Length > 1 && windowTitle.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0;
                 bool webApp = id.IndexOf("_crx_", StringComparison.OrdinalIgnoreCase) >= 0;
-                int score = (titleMatch ? 10 : 0) + (webApp ? 4 : 0) + (id == appId && appId.Length > 0 ? 4 : 0);
-                if (!titleMatch && id != appId) score = 0;
+                if (webApp) { webApps++; onlyWebApp = s; onlyWebAppProps = p; }
+                int score = (titleMatch ? 10 : 0) + (webApp ? 4 : 0) + (id == AppId && AppId.Length > 0 ? 8 : 0);
+                if (!titleMatch && id != AppId) score = 0;
                 if (score > bestScore) { best = s; bestProps = p; bestScore = score; }
             }
-            if (best != null && bestScore >= 10 && best.SourceAppUserModelId.IndexOf("_crx_", StringComparison.OrdinalIgnoreCase) >= 0)
-                appId = best.SourceAppUserModelId;
+            // Nothing matched by title or saved id: if exactly one installed web app has media, it's ours.
+            if (best == null && webApps == 1) { best = onlyWebApp; bestProps = onlyWebAppProps; bestScore = 4; }
+            if (best != null && best.SourceAppUserModelId.IndexOf("_crx_", StringComparison.OrdinalIgnoreCase) >= 0
+                && best.SourceAppUserModelId != AppId && (bestScore >= 10 || AppId.Length == 0))
+            {
+                AppId = best.SourceAppUserModelId;
+                if (AppIdLearned != null) AppIdLearned();
+            }
             if (best == null)
             {
-                if (session != null) Log.Write("No session matches window '" + windowTitle + "'. Sessions: " + string.Join(" | ", seen));
+                string summary = windowTitle + " / " + string.Join(" | ", seen);
+                if (summary != lastMissLog) Log.Write("No session matches window '" + windowTitle + "'. Sessions: " + string.Join(" | ", seen));
+                lastMissLog = summary;
                 session = null;
                 return false;
             }
@@ -403,7 +486,7 @@ namespace YTMusicMini
                         bmp.BeginInit();
                         bmp.CacheOption = BitmapCacheOption.OnLoad;
                         bmp.StreamSource = new MemoryStream(bytes);
-                        bmp.DecodePixelHeight = 160;
+                        bmp.DecodePixelHeight = 240;
                         bmp.EndInit();
                         bmp.Freeze();
                         Art = bmp;
@@ -458,7 +541,8 @@ namespace YTMusicMini
     {
         const string Xaml = @"
 <Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
-        x:Name='Root' Padding='9' CornerRadius='8' BorderThickness='1' TextOptions.TextFormattingMode='Display'>
+        x:Name='Root' Padding='9' CornerRadius='8' BorderThickness='1' UseLayoutRounding='True' SnapsToDevicePixels='True'
+        TextOptions.TextFormattingMode='Display' TextOptions.TextHintingMode='Fixed' RenderOptions.ClearTypeHint='Enabled'>
   <Border.Resources>
     <SolidColorBrush x:Key='HoverBrush' Color='#26FFFFFF'/>
     <SolidColorBrush x:Key='PressBrush' Color='#40FFFFFF'/>
@@ -467,6 +551,7 @@ namespace YTMusicMini
     <Style x:Key='Icon' TargetType='Button'>
       <Setter Property='Foreground' Value='#FFFFFF'/>
       <Setter Property='FontFamily' Value='Segoe Fluent Icons, Segoe MDL2 Assets'/>
+      <Setter Property='TextOptions.TextRenderingMode' Value='Grayscale'/>
       <Setter Property='FontSize' Value='14'/>
       <Setter Property='Width' Value='28'/>
       <Setter Property='Height' Value='28'/>
@@ -518,10 +603,10 @@ namespace YTMusicMini
       <ColumnDefinition Width='10'/>
       <ColumnDefinition Width='*'/>
     </Grid.ColumnDefinitions>
-    <Grid x:Name='ArtHost' Width='70' Height='70' Cursor='Hand' ToolTip='Open YouTube Music'>
+    <Grid x:Name='ArtHost' Width='70' Height='70' Cursor='Hand' ToolTip='Open YouTube Music' RenderOptions.BitmapScalingMode='HighQuality'>
       <Border x:Name='ArtBack' CornerRadius='6'/>
       <Border x:Name='ArtFront' CornerRadius='6'/>
-      <TextBlock x:Name='ArtGlyph' Text='&#xE8D6;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='24'
+      <TextBlock x:Name='ArtGlyph' Text='&#xE8D6;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='24' TextOptions.TextRenderingMode='Grayscale'
                  HorizontalAlignment='Center' VerticalAlignment='Center'/>
     </Grid>
     <Grid Grid.Column='2'>
@@ -536,15 +621,12 @@ namespace YTMusicMini
         </Grid.ColumnDefinitions>
         <StackPanel Margin='0,0,6,0'>
           <Canvas x:Name='TitleBox' Height='18' ClipToBounds='True'>
-            <TextBlock x:Name='TitleText' Text='Nothing playing' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='13' FontWeight='SemiBold'
-                       TextOptions.TextFormattingMode='Ideal'>
-              <TextBlock.RenderTransform><TranslateTransform/></TextBlock.RenderTransform>
-            </TextBlock>
+            <TextBlock x:Name='TitleText' Text='Nothing playing' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='13' FontWeight='SemiBold'/>
+            <Rectangle x:Name='TitleFade' Width='18' Height='18' Canvas.Right='0' Canvas.Top='0' Visibility='Collapsed'/>
           </Canvas>
           <Canvas x:Name='ArtistBox' Height='16' ClipToBounds='True' Margin='0,1,0,0'>
-            <TextBlock x:Name='ArtistText' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='12' TextOptions.TextFormattingMode='Ideal'>
-              <TextBlock.RenderTransform><TranslateTransform/></TextBlock.RenderTransform>
-            </TextBlock>
+            <TextBlock x:Name='ArtistText' FontFamily='Segoe UI Variable Text, Segoe UI' FontSize='12'/>
+            <Rectangle x:Name='ArtistFade' Width='18' Height='16' Canvas.Right='0' Canvas.Top='0' Visibility='Collapsed'/>
           </Canvas>
         </StackPanel>
         <StackPanel Grid.Column='1' Orientation='Horizontal' VerticalAlignment='Top' Margin='0,-4,-4,0'>
@@ -577,14 +659,10 @@ namespace YTMusicMini
   </Grid>
 </Border>";
 
-        // Scrolling text: speed in pixels per second and how long it rests at each end.
-        const double MarqueeSpeed = 16, MarqueeHold = 2.4, MarqueeEndPad = 14;
-        // Opacity while the mouse isn't over the player.
-        const double IdleAlpha = 0.90;
-
         public Border ArtBack, ArtFront, Fill, Track;
         public Grid ArtHost, Seek;
         public Canvas TitleBox, ArtistBox;
+        public Rectangle TitleFade, ArtistFade;
         public TextBlock ArtGlyph, TitleText, ArtistText, CurText, DurText;
         public Button PlayBtn, PrevBtn, NextBtn, RestoreBtn, CloseBtn;
         public Ellipse Knob;
@@ -595,17 +673,20 @@ namespace YTMusicMini
 
         readonly Border root;
         Brush placeholder = Brushes.Transparent;
+        IntPtr hwnd;
         double alpha;
         Anim fadeAnim, moveAnim, themeAnim;
         Theme shown;
         ImageSource currentArt;
+        Marquee titleMarquee, artistMarquee;
+        readonly DispatcherTimer marqueeTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
 
         public MiniWindow()
         {
             Title = "YT Music Mini";
             Width = 340;
             Height = 90;
-            // A transparent window that draws its own rounded card, so the whole player can fade.
+            // A transparent window that draws its own rounded card, so the player can fade in and out.
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -636,6 +717,16 @@ namespace YTMusicMini
             Fill = (Border)root.FindName("Fill");
             Track = (Border)root.FindName("Track");
             Knob = (Ellipse)root.FindName("Knob");
+            TitleFade = (Rectangle)root.FindName("TitleFade");
+            ArtistFade = (Rectangle)root.FindName("ArtistFade");
+            titleMarquee = new Marquee(TitleBox, TitleText, TitleFade);
+            artistMarquee = new Marquee(ArtistBox, ArtistText, ArtistFade);
+            marqueeTimer.Tick += delegate
+            {
+                double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+                titleMarquee.Step(ppd);
+                artistMarquee.Step(ppd);
+            };
 
             // Drag the player by any empty area; it snaps when let go near the bottom of the screen.
             root.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e)
@@ -645,10 +736,6 @@ namespace YTMusicMini
                 try { DragMove(); } catch { }
                 if (DragFinished != null) DragFinished();
             };
-
-            // Slightly see-through until the mouse is over it.
-            MouseEnter += delegate { if (IsVisible && !Hiding) FadeTo(1, 140, null); };
-            MouseLeave += delegate { if (IsVisible && !Hiding && !Dragging) FadeTo(IdleAlpha, 280, null); };
 
             Seek.MouseEnter += delegate { Track.Height = 4; Fill.Height = 4; Knob.Visibility = Visibility.Visible; };
             Seek.MouseLeave += delegate { if (!Dragging) { Track.Height = 3; Fill.Height = 3; Knob.Visibility = Visibility.Hidden; } };
@@ -696,7 +783,7 @@ namespace YTMusicMini
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            hwnd = new WindowInteropHelper(this).Handle;
             // Out of Alt+Tab and never steals focus from what you're typing in.
             int ex = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
             Native.SetWindowLong(hwnd, Native.GWL_EXSTYLE, ex | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE);
@@ -715,18 +802,46 @@ namespace YTMusicMini
             fadeAnim = Anim.Run(ms, p => SetAlpha(from + (target - from) * p), done);
         }
 
+        // Positions are in real screen pixels (not WPF's scaled units), so placement stays exact on
+        // monitors with different display scaling.
+        public Native.RECT PixelRect()
+        {
+            Native.RECT r;
+            Native.GetWindowRect(hwnd, out r);
+            return r;
+        }
+
+        public double Scale
+        {
+            get
+            {
+                uint dpi = hwnd != IntPtr.Zero ? Native.GetDpiForWindow(hwnd) : 0;
+                return dpi > 0 ? dpi / 96.0 : 1;
+            }
+        }
+
+        public void MoveTo(double x, double y)
+        {
+            Native.SetWindowPos(hwnd, IntPtr.Zero, (int)Math.Round(x), (int)Math.Round(y), 0, 0,
+                Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);
+        }
+
         // Fades in while sliding up a little into place.
-        public void AnimateIn(double left, double top)
+        public void AnimateIn(double x, double y)
         {
             Anim.Stop(fadeAnim);
             Anim.Stop(moveAnim);
             Hiding = false;
-            Left = left;
-            Top = top + 14;
-            if (!IsVisible) { SetAlpha(0); Show(); }
-            double fromTop = Top;
-            FadeTo(IsMouseOver ? 1 : IdleAlpha, 230, null);
-            moveAnim = Anim.Run(280, p => Top = fromTop + (top - fromTop) * p, null);
+            if (!IsVisible)
+            {
+                SetAlpha(0);
+                MoveTo(x, y + 14 * Native.ScaleAt((int)x + 10, (int)y + 10));
+                Show();
+            }
+            var r = PixelRect();
+            double fromX = r.Left, fromY = r.Top;
+            FadeTo(1, 230, null);
+            moveAnim = Anim.Run(280, p => MoveTo(fromX + (x - fromX) * p, fromY + (y - fromY) * p), null);
             RefreshMarquees();
         }
 
@@ -736,22 +851,24 @@ namespace YTMusicMini
             if (!IsVisible || Hiding) return;
             Hiding = true;
             Anim.Stop(moveAnim);
-            double fromTop = Top;
-            moveAnim = Anim.Run(170, p => Top = fromTop + 10 * p, null);
+            var r = PixelRect();
+            double x = r.Left, y = r.Top, drop = 10 * Scale;
+            moveAnim = Anim.Run(170, p => MoveTo(x, y + drop * p), null);
             FadeTo(0, 170, delegate
             {
                 Hide();
-                Top = fromTop;
+                MoveTo(x, y);
                 Hiding = false;
                 StopMarquees();
             });
         }
 
-        public void GlideTo(double left, double top, Action done)
+        public void GlideTo(double x, double y, Action done)
         {
             Anim.Stop(moveAnim);
-            double fromL = Left, fromT = Top;
-            moveAnim = Anim.Run(180, p => { Left = fromL + (left - fromL) * p; Top = fromT + (top - fromT) * p; }, done);
+            var r = PixelRect();
+            double fromX = r.Left, fromY = r.Top;
+            moveAnim = Anim.Run(180, p => MoveTo(fromX + (x - fromX) * p, fromY + (y - fromY) * p), done);
         }
 
         public void ApplyTheme(Theme target, bool animate)
@@ -796,6 +913,11 @@ namespace YTMusicMini
             if (ArtFront.Background == placeholder || ArtFront.Background == null) ArtFront.Background = newPlaceholder;
             if (ArtBack.Background == placeholder) ArtBack.Background = newPlaceholder;
             placeholder = newPlaceholder;
+            // The soft fade at the right edge of scrolling text is painted in the background color.
+            var edge = new LinearGradientBrush(Color.FromArgb(0, t.Bg.R, t.Bg.G, t.Bg.B), t.Bg, 0);
+            edge.Freeze();
+            TitleFade.Fill = edge;
+            ArtistFade.Fill = edge;
         }
 
         // Crossfades from the previous artwork to the new one.
@@ -828,60 +950,92 @@ namespace YTMusicMini
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate
             {
                 if (!IsVisible) return;
-                Marquee(TitleBox, TitleText, 0);
-                Marquee(ArtistBox, ArtistText, 1.1);
+                titleMarquee.Start(0);
+                artistMarquee.Start(1.1);
+                if (titleMarquee.Active || artistMarquee.Active) marqueeTimer.Start();
+                else marqueeTimer.Stop();
             }));
         }
 
         public void StopMarquees()
         {
-            foreach (var tb in new[] { TitleText, ArtistText })
-            {
-                var tt = (TranslateTransform)tb.RenderTransform;
-                tt.BeginAnimation(TranslateTransform.XProperty, null);
-                tt.X = 0;
-            }
+            marqueeTimer.Stop();
+            titleMarquee.Stop();
+            artistMarquee.Stop();
         }
+    }
 
-        // Text that doesn't fit slides to its end, rests, slides back, rests, and repeats.
-        // Text that fits stays still.
-        void Marquee(Canvas box, TextBlock tb, double delaySeconds)
+    // Text that doesn't fit slides to its end, rests, slides back, rests, and repeats; text that fits
+    // stays still. It moves in whole-pixel steps so the letters stay sharp the whole time.
+    class Marquee
+    {
+        const double Speed = 16, Hold = 2.4, EndPad = 14;   // pixels per second, seconds resting at each end
+
+        readonly Canvas box;
+        readonly TextBlock text;
+        readonly Rectangle fade;
+        readonly TranslateTransform shift = new TranslateTransform();
+        readonly Stopwatch clock = new Stopwatch();
+        double distance, move, delay;
+        public bool Active;
+
+        public Marquee(Canvas box, TextBlock text, Rectangle fade)
         {
-            var tt = (TranslateTransform)tb.RenderTransform;
-            tt.BeginAnimation(TranslateTransform.XProperty, null);
-            tt.X = 0;
-            tb.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            double over = tb.DesiredSize.Width - box.ActualWidth;
-            if (box.ActualWidth <= 0 || over <= 1)
-            {
-                box.OpacityMask = null;
-                return;
-            }
-            // Fade the right edge so the cut-off text looks intentional.
-            double fadeStart = Math.Max(0, 1 - MarqueeEndPad / box.ActualWidth);
-            var mask = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 0) };
-            mask.GradientStops.Add(new GradientStop(Colors.Black, 0));
-            mask.GradientStops.Add(new GradientStop(Colors.Black, fadeStart));
-            mask.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
-            box.OpacityMask = mask;
-
-            double distance = over + MarqueeEndPad;
-            double move = Math.Max(1.6, distance / MarqueeSpeed), hold = MarqueeHold;
-            var ease = new SineEase { EasingMode = EasingMode.EaseInOut };
-            var a = new DoubleAnimationUsingKeyFrames { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(delaySeconds) };
-            a.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-            a.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(hold))));
-            a.KeyFrames.Add(new EasingDoubleKeyFrame(-distance, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(hold + move)), ease));
-            a.KeyFrames.Add(new LinearDoubleKeyFrame(-distance, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(2 * hold + move))));
-            a.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(2 * hold + 2 * move)), ease));
-            tt.BeginAnimation(TranslateTransform.XProperty, a);
+            this.box = box;
+            this.text = text;
+            this.fade = fade;
+            text.RenderTransform = shift;
         }
+
+        public void Start(double delaySeconds)
+        {
+            Stop();
+            text.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            double over = text.DesiredSize.Width - box.ActualWidth;
+            if (box.ActualWidth <= 0 || over <= 1) return;
+            distance = Math.Ceiling(over + EndPad);
+            move = Math.Max(1.6, distance / Speed);
+            delay = delaySeconds;
+            fade.Visibility = Visibility.Visible;
+            Active = true;
+            clock.Restart();
+        }
+
+        public void Stop()
+        {
+            Active = false;
+            clock.Reset();
+            shift.X = 0;
+            fade.Visibility = Visibility.Collapsed;
+        }
+
+        public void Step(double pixelsPerDip)
+        {
+            if (!Active) return;
+            double t = clock.Elapsed.TotalSeconds - delay, x = 0;
+            if (t > 0)
+            {
+                t %= 2 * Hold + 2 * move;
+                if (t < Hold) x = 0;
+                else if (t < Hold + move) x = -distance * Ease((t - Hold) / move);
+                else if (t < 2 * Hold + move) x = -distance;
+                else x = -distance * (1 - Ease((t - 2 * Hold - move) / move));
+            }
+            x = Math.Round(x * pixelsPerDip) / pixelsPerDip;
+            if (x != shift.X) shift.X = x;
+        }
+
+        static double Ease(double p) { return 0.5 - 0.5 * Math.Cos(Math.PI * p); }
     }
 
     class Settings
     {
         static string FilePath { get { return System.IO.Path.Combine(Log.Dir, "settings.txt"); } }
-        public double Left = double.NaN, Top = double.NaN;
+        // Where the player was left, in screen pixels, and what it's snapped to:
+        // "" (nowhere), "bottom", "bottomleft" or "bottomright".
+        public double X = double.NaN, Y = double.NaN;
+        public string Snap = "";
+        public string AppId = "";
         public bool StartupConfigured;
 
         public static Settings Load()
@@ -896,8 +1050,10 @@ namespace YTMusicMini
                     if (eq < 0) continue;
                     string k = line.Substring(0, eq).Trim(), v = line.Substring(eq + 1).Trim();
                     double d;
-                    if (k == "left" && double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) s.Left = d;
-                    if (k == "top" && double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) s.Top = d;
+                    if (k == "x" && double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) s.X = d;
+                    if (k == "y" && double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) s.Y = d;
+                    if (k == "snap") s.Snap = v;
+                    if (k == "appId") s.AppId = v;
                     if (k == "startupConfigured") s.StartupConfigured = v == "1";
                 }
             }
@@ -912,8 +1068,10 @@ namespace YTMusicMini
                 Directory.CreateDirectory(Log.Dir);
                 var ci = System.Globalization.CultureInfo.InvariantCulture;
                 File.WriteAllText(FilePath,
-                    "left=" + (double.IsNaN(Left) ? "" : Left.ToString(ci)) + "\r\n" +
-                    "top=" + (double.IsNaN(Top) ? "" : Top.ToString(ci)) + "\r\n" +
+                    "x=" + (double.IsNaN(X) ? "" : X.ToString(ci)) + "\r\n" +
+                    "y=" + (double.IsNaN(Y) ? "" : Y.ToString(ci)) + "\r\n" +
+                    "snap=" + Snap + "\r\n" +
+                    "appId=" + AppId + "\r\n" +
                     "startupConfigured=" + (StartupConfigured ? "1" : "0") + "\r\n");
             }
             catch { }
@@ -977,6 +1135,8 @@ namespace YTMusicMini
                 settings.Save();
             }
 
+            media.AppId = settings.AppId;
+            media.AppIdLearned += delegate { settings.AppId = media.AppId; settings.Save(); };
             try { await media.Init(); }
             catch (Exception ex) { Log.Write("Media init failed: " + ex.Message); }
 
@@ -1014,6 +1174,7 @@ namespace YTMusicMini
 
         void BeginWatching(IntPtr hwnd)
         {
+            if (hwnd != yt || !watching) Log.Write("YouTube Music minimized: '" + Native.Title(hwnd) + "'");
             yt = hwnd;
             watching = true;
             dismissed = false;
@@ -1078,50 +1239,49 @@ namespace YTMusicMini
             win.AnimateOut();
         }
 
-        // The saved spot if it's still on a screen, otherwise the bottom-right corner.
-        void TargetPosition(out double l, out double t)
+        // Where to show the player, in screen pixels. Snapped spots are recomputed on the screen the
+        // player was left on (or the nearest one if that monitor is gone), so a bottom-left player stays
+        // bottom-left even if monitors or scaling change. Free spots are kept fully on a screen.
+        void TargetPosition(out double x, out double y)
         {
-            l = settings.Left;
-            t = settings.Top;
-            bool onScreen = !double.IsNaN(l) && !double.IsNaN(t)
-                && l >= SystemParameters.VirtualScreenLeft - 20 && t >= SystemParameters.VirtualScreenTop - 20
-                && l + win.Width <= SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth + 20
-                && t + win.Height <= SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight + 20;
-            if (!onScreen)
-            {
-                Rect wa = SystemParameters.WorkArea;
-                l = wa.Right - win.Width - SnapMargin;
-                t = wa.Bottom - win.Height - SnapMargin;
-            }
-        }
-
-        Rect WorkArea()
-        {
-            var src = PresentationSource.FromVisual(win);
-            if (src == null || src.CompositionTarget == null) return SystemParameters.WorkArea;
-            var wa = WinForms.Screen.FromHandle(new WindowInteropHelper(win).Handle).WorkingArea;
-            Matrix m = src.CompositionTarget.TransformFromDevice;
-            return new Rect(m.Transform(new Point(wa.Left, wa.Top)), m.Transform(new Point(wa.Right, wa.Bottom)));
+            bool saved = !double.IsNaN(settings.X) && !double.IsNaN(settings.Y);
+            var screen = saved ? WinForms.Screen.FromPoint(new System.Drawing.Point((int)settings.X + 1, (int)settings.Y + 1))
+                               : WinForms.Screen.PrimaryScreen;
+            var wa = screen.WorkingArea;
+            double scale = Native.ScaleAt(wa.Left + wa.Width / 2, wa.Top + wa.Height / 2);
+            double w = Math.Round(win.Width * scale), h = Math.Round(win.Height * scale), m = SnapMargin * scale;
+            string snap = saved ? settings.Snap : "bottomright";
+            x = saved ? settings.X : 0;
+            y = saved ? settings.Y : 0;
+            if (snap == "bottomright") { x = wa.Right - m - w; y = wa.Bottom - m - h; }
+            else if (snap == "bottomleft") { x = wa.Left + m; y = wa.Bottom - m - h; }
+            else if (snap == "bottom") y = wa.Bottom - m - h;
+            x = Math.Max(wa.Left, Math.Min(x, wa.Right - w));
+            y = Math.Max(wa.Top, Math.Min(y, wa.Bottom - h));
         }
 
         // Let go near the bottom edge and it settles onto it; near a bottom corner and it settles into
         // the corner. Anywhere else it stays where it was dropped.
         void OnDragFinished()
         {
-            Rect wa = WorkArea();
-            double l = win.Left, t = win.Top;
-            double bottom = wa.Bottom - SnapMargin - win.Height;
-            double leftEdge = wa.Left + SnapMargin, rightEdge = wa.Right - SnapMargin - win.Width;
-            if (t >= bottom - SnapReach)
+            var r = win.PixelRect();
+            double w = r.Right - r.Left, h = r.Bottom - r.Top, x = r.Left, y = r.Top;
+            var wa = WinForms.Screen.FromRectangle(new System.Drawing.Rectangle(r.Left, r.Top, (int)w, (int)h)).WorkingArea;
+            double scale = win.Scale, m = SnapMargin * scale, reach = SnapReach * scale;
+            double bottom = wa.Bottom - m - h, leftEdge = wa.Left + m, rightEdge = wa.Right - m - w;
+            string snap = "";
+            if (y >= bottom - reach)
             {
-                t = bottom;
-                if (l <= leftEdge + SnapReach) l = leftEdge;
-                else if (l >= rightEdge - SnapReach) l = rightEdge;
+                y = bottom;
+                snap = "bottom";
+                if (x <= leftEdge + reach) { x = leftEdge; snap = "bottomleft"; }
+                else if (x >= rightEdge - reach) { x = rightEdge; snap = "bottomright"; }
             }
-            win.GlideTo(l, t, delegate
+            win.GlideTo(x, y, delegate
             {
-                settings.Left = l;
-                settings.Top = t;
+                settings.X = x;
+                settings.Y = y;
+                settings.Snap = snap;
                 settings.Save();
             });
         }
