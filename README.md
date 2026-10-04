@@ -16,6 +16,7 @@ The mini player shows:
 - the song's artwork, title and artist (long titles and artist names slide back and forth at a steady pace, setting off together)
 - previous, play/pause and next buttons
 - a red time bar you can click or drag to jump within the song
+- a **−** button that shrinks it to a compact player (just the cover, with previous / play-pause / next underneath); click the cover to bring the full player back in the same spot. It remembers which size you left it at.
 - a button to reopen YouTube Music, and one to hide the player until the next minimize
 
 Little touches:
