@@ -819,11 +819,12 @@ namespace YTMusicMini
 
         readonly Border root;
         Brush placeholder = Brushes.Transparent;
-        readonly LinearGradientBrush background = new LinearGradientBrush { MappingMode = BrushMappingMode.Absolute };
-        readonly GradientStop stopA = new GradientStop(), stopB = new GradientStop(), stopC = new GradientStop(), stopD = new GradientStop { Offset = 1 };
         readonly Stopwatch gradientClock = Stopwatch.StartNew();
         readonly DispatcherTimer gradientTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
-        Point gradientStart, gradientEnd;
+        WriteableBitmap backdrop;
+        int[] backdropPixels;
+        Color bgLeft, bgRight;
+        double gradientTime;
         IntPtr hwnd;
         double alpha;
         Anim fadeAnim, moveAnim, themeAnim;
@@ -872,8 +873,6 @@ namespace YTMusicMini
             Knob = (Ellipse)root.FindName("Knob");
             TitleFade = (Rectangle)root.FindName("TitleFade");
             ArtistFade = (Rectangle)root.FindName("ArtistFade");
-            foreach (var stop in new[] { stopA, stopB, stopC, stopD }) background.GradientStops.Add(stop);
-            root.Background = background;
             gradientTimer.Tick += delegate { UpdateGradient(gradientClock.Elapsed.TotalSeconds * GradientSpeed); };
             titleMarquee = new Marquee(TitleBox, TitleText, TitleFade);
             artistMarquee = new Marquee(ArtistBox, ArtistText, ArtistFade);
@@ -1045,33 +1044,62 @@ namespace YTMusicMini
             return b;
         }
 
-        // The moving background: a diagonal blend from the artwork's main color (left) to its second
-        // color (right) that slowly rocks back and forth while the meeting point drifts around the middle.
-        const double GradientMovement = 3.0, GradientSpeed = 2.1, GradientBlend = 0.14;
+        // The moving background: the artwork's main color on the left and its second color on the right,
+        // meeting at a crisp, gently wavy edge that drifts and tilts slowly around the middle.
+        // Edge: half-width of the blend between the colors, as a fraction of the player's width.
+        const double GradientMovement = 1.2, GradientSpeed = 1.6, GradientEdge = 0.03;
 
+        // Where the edge is (fraction of the width) at height v (0 = top, 1 = bottom), t seconds in.
+        static double EdgeAt(double v, double t, double aspect)
+        {
+            double mid = 0.5 + 0.04 * GradientMovement * Math.Sin(t * 0.5 + 1);
+            double tilt = Math.Tan(7 * GradientMovement * Math.Sin(t * 0.35) * Math.PI / 180);
+            double wave = 0.03 * Math.Min(1.5, GradientMovement) * Math.Sin(2 * Math.PI * v / 1.4 + t * 1.1);
+            return mid + (v - 0.5) * aspect * tilt + wave;
+        }
+
+        // Paints the background into a small bitmap at the screen's pixel density.
         void UpdateGradient(double t)
         {
-            double w = root.ActualWidth > 0 ? root.ActualWidth : Width, h = root.ActualHeight > 0 ? root.ActualHeight : Height;
-            double angle = (100 + 14 * GradientMovement * Math.Sin(t * 0.35)) * Math.PI / 180;
-            double mid = 0.5 + 0.04 * GradientMovement * Math.Sin(t * 0.5 + 1);
-            double dx = Math.Sin(angle), dy = -Math.Cos(angle), length = Math.Abs(w * dx) + Math.Abs(h * dy);
-            gradientStart = new Point(w / 2 - dx * length / 2, h / 2 - dy * length / 2);
-            gradientEnd = new Point(w / 2 + dx * length / 2, h / 2 + dy * length / 2);
-            background.StartPoint = gradientStart;
-            background.EndPoint = gradientEnd;
-            stopB.Offset = Math.Max(0, mid - GradientBlend);
-            stopC.Offset = Math.Min(1, mid + GradientBlend);
+            gradientTime = t;
+            double dipW = root.ActualWidth > 0 ? root.ActualWidth : Width, dipH = root.ActualHeight > 0 ? root.ActualHeight : Height;
+            double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            int w = Math.Max(1, (int)Math.Round(dipW * scale)), h = Math.Max(1, (int)Math.Round(dipH * scale));
+            if (backdrop == null || backdrop.PixelWidth != w || backdrop.PixelHeight != h)
+            {
+                backdrop = new WriteableBitmap(w, h, 96 * scale, 96 * scale, PixelFormats.Bgr32, null);
+                backdropPixels = new int[w * h];
+                root.Background = new ImageBrush(backdrop) { Stretch = Stretch.Fill };
+            }
+            int left = (bgLeft.R << 16) | (bgLeft.G << 8) | bgLeft.B, right = (bgRight.R << 16) | (bgRight.G << 8) | bgRight.B;
+            double band = GradientEdge * w;
+            for (int y = 0; y < h; y++)
+            {
+                double edge = EdgeAt((y + 0.5) / h, t, dipH / dipW) * w;
+                int start = (int)Math.Floor(edge - band), end = (int)Math.Ceiling(edge + band), row = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    if (x < start) backdropPixels[row + x] = left;
+                    else if (x > end) backdropPixels[row + x] = right;
+                    else
+                    {
+                        double f = Math.Max(0, Math.Min(1, (x + 0.5 - (edge - band)) / (2 * band)));
+                        Color c = Theme.Mix(bgLeft, bgRight, f);
+                        backdropPixels[row + x] = (c.R << 16) | (c.G << 8) | c.B;
+                    }
+                }
+            }
+            backdrop.WritePixels(new Int32Rect(0, 0, w, h), backdropPixels, w * 4, 0);
             UpdateFades();
         }
 
         // The background color at a point on the player.
         Color BackgroundAt(Point p)
         {
-            double vx = gradientEnd.X - gradientStart.X, vy = gradientEnd.Y - gradientStart.Y, length2 = vx * vx + vy * vy;
-            double f = length2 > 0 ? ((p.X - gradientStart.X) * vx + (p.Y - gradientStart.Y) * vy) / length2 : 0;
-            if (f <= stopB.Offset) return stopA.Color;
-            if (f >= stopC.Offset) return stopD.Color;
-            return Theme.Mix(stopB.Color, stopC.Color, (f - stopB.Offset) / (stopC.Offset - stopB.Offset));
+            double dipW = root.ActualWidth > 0 ? root.ActualWidth : Width, dipH = root.ActualHeight > 0 ? root.ActualHeight : Height;
+            double edge = EdgeAt(p.Y / dipH, gradientTime, dipH / dipW);
+            double f = Math.Max(0, Math.Min(1, (p.X / dipW - (edge - GradientEdge)) / (2 * GradientEdge)));
+            return Theme.Mix(bgLeft, bgRight, f);
         }
 
         // The soft fade at the right edge of scrolling text is painted in whatever color is behind it.
@@ -1092,10 +1120,9 @@ namespace YTMusicMini
         void SetColors(Theme t)
         {
             shown = t;
-            stopA.Color = t.Bg;
-            stopB.Color = t.Bg;
-            stopC.Color = t.Bg2;
-            stopD.Color = t.Bg2;
+            bgLeft = t.Bg;
+            bgRight = t.Bg2;
+            UpdateGradient(gradientTime);
             root.BorderBrush = B(t.Border);
             TitleText.Foreground = B(t.Title);
             Brush sub = B(t.Sub), icon = B(t.Icon), time = B(t.Time);
@@ -1117,7 +1144,6 @@ namespace YTMusicMini
             if (ArtFront.Background == placeholder || ArtFront.Background == null) ArtFront.Background = newPlaceholder;
             if (ArtBack.Background == placeholder) ArtBack.Background = newPlaceholder;
             placeholder = newPlaceholder;
-            UpdateFades();
         }
 
         // Crossfades from the previous artwork to the new one.
