@@ -5,9 +5,12 @@ a small always-on-top player appears in the corner of the screen; when you open 
 it disappears. Works on Windows 10 and 11.
 
 <p align="center">
-  <img src="docs/mini-player.png" width="388" alt="The mini player showing Bohemian Rhapsody by Queen, with a lavender background taken from the artwork, playback buttons and a red time bar">
+  <img src="docs/desktop.png" width="900" alt="A Windows 11 desktop with the mini player in the bottom-right corner above the taskbar, playing Clair de Lune by Claude Debussy, and the app's icon in the system tray">
 </p>
-<p align="center"><sub>The artwork in this screenshot is an original placeholder, not the real album cover.</sub></p>
+<p align="center">
+  <img src="docs/mini-player.png" width="388" alt="Close-up of the mini player: moonlit artwork, Clair de Lune by Claude Debussy, previous, pause and next buttons, and a red time bar at 1:47 of 5:02">
+</p>
+<p align="center"><sub>Simulated desktop. "Clair de Lune" by Claude Debussy is in the public domain, and the moonlit artwork is an original drawing, not a real album cover.</sub></p>
 
 The mini player shows:
 - the song's artwork, title and artist (long titles and artist names slide back and forth at a steady pace, setting off together)
@@ -55,10 +58,10 @@ To check the design without touching any media:
 ```powershell
 .\bin\YTMusicMini.exe --preview        # neutral colors
 .\bin\YTMusicMini.exe --preview 140    # tinted as if the artwork were green (any hue 0-360)
-.\docs\make-screenshot.ps1             # re-renders docs\mini-player.png for this README
+.\docs\make-screenshot.ps1             # re-renders the two README images in docs\
 ```
 
-`--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss` and `--snapshot <file.png>`.
+`--preview` also takes `--title`, `--artist`, `--art <image>`, `--position m:ss`, `--duration m:ss`, `--snapshot <file.png>` and `--desktop` (snapshot on a simulated Windows desktop).
 
 The background style lives in `Theme.BgLightness` and `Theme.BgChroma` in `MiniPlayer.cs`.
 
@@ -70,7 +73,7 @@ The background style lives in `Theme.BgLightness` and `Theme.BgChroma` in `MiniP
 | `build.ps1` | Compile, install and start |
 | `make-icon.ps1` | Draws `app.ico` (run automatically by the build) |
 | `app.manifest` | Tells Windows the app handles per-monitor display scaling |
-| `docs/make-screenshot.ps1` | Renders the README screenshot |
+| `docs/make-screenshot.ps1` | Renders the README images (`docs/desktop.png`, `docs/mini-player.png`) |
 
 Settings and a small log are kept in `%LOCALAPPDATA%\YT Music Mini`.
 

@@ -34,8 +34,8 @@ using AsyncStatus = Windows.Foundation.AsyncStatus;
 [assembly: System.Reflection.AssemblyTitle("YT Music Mini")]
 [assembly: System.Reflection.AssemblyDescription("Floating mini player for the YouTube Music app")]
 [assembly: System.Reflection.AssemblyProduct("YT Music Mini")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.1.0")]
 
 namespace YTMusicMini
 {
@@ -1051,20 +1051,92 @@ namespace YTMusicMini
         // Draws the player (with a soft shadow) to a PNG at twice the normal resolution, for screenshots.
         public void Snapshot(string path, double fraction)
         {
+            const double pad = 24;
+            var stage = new Grid { Width = Width + 2 * pad, Height = Height + 2 * pad };
+            stage.Children.Add(DetachWithShadow(pad, pad));
+            Render(stage, path, 2, fraction);
+        }
+
+        // Draws the player in the corner of a simulated Windows 11 desktop (original wallpaper, generic
+        // taskbar icons, this app's own tray icon), for the README.
+        public void SnapshotDesktop(string path, double fraction)
+        {
+            const double W = 1280, H = 720, bar = 48, gap = 14;
+            var stage = new Grid { Width = W, Height = H, ClipToBounds = true };
+
+            var wall = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
+            wall.GradientStops.Add(new GradientStop(Color.FromRgb(0x17, 0x1E, 0x4A), 0));
+            wall.GradientStops.Add(new GradientStop(Color.FromRgb(0x2B, 0x57, 0x8C), 0.55));
+            wall.GradientStops.Add(new GradientStop(Color.FromRgb(0x76, 0x58, 0xA6), 1));
+            stage.Background = wall;
+            var glows = new Canvas();
+            AddGlow(glows, 930, 150, 430, Color.FromArgb(0x60, 0x9E, 0xC9, 0xFF));
+            AddGlow(glows, 260, 560, 400, Color.FromArgb(0x50, 0xC7, 0x8B, 0xE8));
+            AddGlow(glows, 600, 330, 260, Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF));
+            stage.Children.Add(glows);
+
+            // Taskbar: generic app icons in the middle; tray icons, this app's icon and the clock on the right.
+            var taskbar = new Grid { Height = bar, VerticalAlignment = VerticalAlignment.Bottom, Background = B(Color.FromArgb(0xEB, 0x1C, 0x1C, 0x1F)) };
+            taskbar.Children.Add(new Border { BorderBrush = B(Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF)), BorderThickness = new Thickness(0, 1, 0, 0) });
+            var apps = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            apps.Children.Add(TaskbarIcon("", Color.FromRgb(0x6C, 0xB8, 0xF6), null, false));
+            apps.Children.Add(TaskbarIcon("", Colors.White, null, false));
+            apps.Children.Add(TaskbarIcon("", Color.FromRgb(0xF7, 0xC9, 0x48), null, false));
+            apps.Children.Add(TaskbarIcon("", Color.FromRgb(0x4F, 0xA3, 0xF7), null, false));
+            apps.Children.Add(TaskbarIcon("", Color.FromRgb(0x5A, 0xB0, 0xF2), null, false));
+            apps.Children.Add(TaskbarIcon("", Colors.White, Color.FromRgb(0xE5, 0x2D, 0x3A), true));   // the minimized music app
+            apps.Children.Add(TaskbarIcon("", Color.FromRgb(0xC8, 0xC8, 0xC8), null, false));
+            taskbar.Children.Add(apps);
+            var tray = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 14, 0) };
+            tray.Children.Add(TrayGlyph(""));
+            var appIcon = AppIcon();
+            if (appIcon != null)
+                tray.Children.Add(new Border
+                {
+                    Width = 28, Height = 28, CornerRadius = new CornerRadius(4), Margin = new Thickness(2, 0, 6, 0),
+                    Background = B(Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF)),
+                    Child = new Image { Source = appIcon, Width = 16, Height = 16 }
+                });
+            tray.Children.Add(TrayGlyph(""));
+            tray.Children.Add(TrayGlyph(""));
+            tray.Children.Add(TrayGlyph(""));
+            var clock = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            clock.Children.Add(new TextBlock { Text = "9:41 AM", Foreground = Brushes.White, FontSize = 12, FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI"), HorizontalAlignment = HorizontalAlignment.Right });
+            clock.Children.Add(new TextBlock { Text = "10/3/2026", Foreground = Brushes.White, FontSize = 12, FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI"), HorizontalAlignment = HorizontalAlignment.Right });
+            tray.Children.Add(clock);
+            taskbar.Children.Add(tray);
+            stage.Children.Add(taskbar);
+
+            stage.Children.Add(DetachWithShadow(W - gap - Width, H - bar - gap - Height));
+            Render(stage, path, 1.5, fraction);
+        }
+
+        // Takes the player out of this window and puts it, with a soft shadow, at (x, y) on a layer.
+        Canvas DetachWithShadow(double x, double y)
+        {
             Content = null;
             TextOptions.SetTextFormattingMode(root, TextFormattingMode.Ideal);
-            const double pad = 24, scale = 2;
+            var layer = new Canvas();
             var shadow = new Border
             {
+                Width = Width, Height = Height,
                 CornerRadius = new CornerRadius(8),
                 Background = root.Background,
-                Margin = new Thickness(pad),
-                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Direction = 270, Opacity = 0.25, Color = Colors.Black }
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 28, ShadowDepth = 6, Direction = 270, Opacity = 0.3, Color = Colors.Black }
             };
-            root.Margin = new Thickness(pad);
-            var stage = new Grid { Width = Width + 2 * pad, Height = Height + 2 * pad };
-            stage.Children.Add(shadow);
-            stage.Children.Add(root);
+            root.Width = Width;
+            root.Height = Height;
+            foreach (UIElement e in new UIElement[] { shadow, root })
+            {
+                Canvas.SetLeft(e, x);
+                Canvas.SetTop(e, y);
+                layer.Children.Add(e);
+            }
+            return layer;
+        }
+
+        void Render(FrameworkElement stage, string path, double scale, double fraction)
+        {
             stage.Measure(new Size(stage.Width, stage.Height));
             stage.Arrange(new Rect(0, 0, stage.Width, stage.Height));
             stage.UpdateLayout();
@@ -1075,6 +1147,55 @@ namespace YTMusicMini
             var png = new PngBitmapEncoder();
             png.Frames.Add(BitmapFrame.Create(image));
             using (var file = File.Create(path)) png.Save(file);
+        }
+
+        static void AddGlow(Canvas c, double cx, double cy, double r, Color color)
+        {
+            var glow = new System.Windows.Shapes.Ellipse { Width = 2 * r, Height = 2 * r, Fill = new RadialGradientBrush(color, Color.FromArgb(0, color.R, color.G, color.B)) };
+            Canvas.SetLeft(glow, cx - r);
+            Canvas.SetTop(glow, cy - r);
+            c.Children.Add(glow);
+        }
+
+        static FrameworkElement TaskbarIcon(string glyph, Color color, Color? circle, bool running)
+        {
+            var cell = new Grid { Width = 44, Height = 40, Margin = new Thickness(2, 0, 2, 0) };
+            var icon = new TextBlock
+            {
+                Text = glyph, FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = circle.HasValue ? 11 : 20,
+                Foreground = B(color), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            };
+            if (circle.HasValue)
+                cell.Children.Add(new Border { Width = 24, Height = 24, CornerRadius = new CornerRadius(12), Background = B(circle.Value), Child = icon });
+            else
+                cell.Children.Add(icon);
+            if (running)
+                cell.Children.Add(new Border { Width = 6, Height = 3, CornerRadius = new CornerRadius(1.5), Background = B(Color.FromRgb(0x9A, 0x9A, 0x9A)), VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 1) });
+            return cell;
+        }
+
+        static FrameworkElement TrayGlyph(string glyph)
+        {
+            return new TextBlock
+            {
+                Text = glyph, FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = 14, Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 6, 0)
+            };
+        }
+
+        static ImageSource AppIcon()
+        {
+            try
+            {
+                using (var s = typeof(MiniWindow).Assembly.GetManifestResourceStream("app.ico"))
+                {
+                    var frames = new IconBitmapDecoder(s, BitmapCreateOptions.None, BitmapCacheOption.OnLoad).Frames;
+                    BitmapFrame best = frames[0];
+                    foreach (var f in frames) if (f.PixelWidth == 32) best = f;
+                    return best;
+                }
+            }
+            catch { return null; }
         }
 
         public void SetText(string titleText, string artistText, bool animate)
@@ -1334,7 +1455,8 @@ namespace YTMusicMini
             double fraction = Fraction(win.CurText.Text, win.DurText.Text);
             if (o.SnapshotPath != null)
             {
-                win.Snapshot(o.SnapshotPath, fraction);
+                if (o.Desktop) win.SnapshotDesktop(o.SnapshotPath, fraction);
+                else win.Snapshot(o.SnapshotPath, fraction);
                 Application.Current.Shutdown();
                 return;
             }
@@ -1591,12 +1713,13 @@ namespace YTMusicMini
     }
 
     // Sample data for "--preview": an optional hue right after the flag ("--preview 140" looks like a
-    // green album), plus --title, --artist, --art <image>, --position m:ss, --duration m:ss and
-    // --snapshot <file.png>.
+    // green album), plus --title, --artist, --art <image>, --position m:ss, --duration m:ss,
+    // --snapshot <file.png> and --desktop (snapshot the player on a simulated Windows desktop).
     class PreviewOptions
     {
         public double? Hue;
         public string Title, Artist, ArtPath, Position, Duration, SnapshotPath;
+        public bool Desktop;
 
         public static PreviewOptions Parse(string[] args, int at)
         {
@@ -1610,6 +1733,7 @@ namespace YTMusicMini
             o.Position = Value(args, "--position");
             o.Duration = Value(args, "--duration");
             o.SnapshotPath = Value(args, "--snapshot");
+            o.Desktop = Array.IndexOf(args, "--desktop") >= 0;
             return o;
         }
 
