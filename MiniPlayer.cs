@@ -2426,6 +2426,7 @@ namespace YTMusicMini
 
         void Exit()
         {
+            Log.Write("Exit chosen from the tray menu");
             foreach (IntPtr hook in hooks) if (hook != IntPtr.Zero) Native.UnhookWinEvent(hook);
             tray.Visible = false;
             tray.Dispose();
@@ -2497,7 +2498,17 @@ namespace YTMusicMini
                     Log.Write("Unhandled: " + e.Exception);
                     e.Handled = true;
                 };
+                // Record every other way the app can stop, so a player that "just disappeared" can be explained.
+                AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+                {
+                    Log.Write("Crashed: " + e.ExceptionObject);
+                };
+                app.SessionEnding += delegate(object s, SessionEndingCancelEventArgs e)
+                {
+                    Log.Write("Windows is ending the session (" + e.ReasonSessionEnding + ")");
+                };
                 app.Run();
+                Log.Write("Stopped");
             }
         }
     }
