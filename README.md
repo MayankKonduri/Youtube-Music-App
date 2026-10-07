@@ -55,7 +55,7 @@ No SDK is needed. It's built with the C# compiler that ships with Windows (.NET 
 .\build.ps1 -NoInstall  # only builds into .\bin
 ```
 
-The first run adds a "Start with Windows" entry for your user account. To turn it off, right-click the tray icon (in the hidden-icons area by the clock). The tray menu also has **Show when YouTube Music is covered** (on by default) and **Exit**.
+The first run turns on "Start with Windows" by putting a YT Music Mini shortcut in your Startup folder (versions before 1.0.5 used a registry entry, which some Windows 11 setups skip at sign-in; it's replaced automatically). To turn it off, right-click the tray icon (in the hidden-icons area by the clock). The tray menu also has **Show when YouTube Music is covered** (on by default) and **Exit**.
 
 To check the design without touching any media:
 

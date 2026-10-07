@@ -34,8 +34,8 @@ using AsyncStatus = Windows.Foundation.AsyncStatus;
 [assembly: System.Reflection.AssemblyTitle("YT Music Mini")]
 [assembly: System.Reflection.AssemblyDescription("Floating mini player for the YouTube Music app")]
 [assembly: System.Reflection.AssemblyProduct("YT Music Mini")]
-[assembly: System.Reflection.AssemblyVersion("1.0.4.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.4.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.5.0")]
 
 namespace YTMusicMini
 {
@@ -2365,23 +2365,63 @@ namespace YTMusicMini
             tray.DoubleClick += delegate { RestoreYt(); };
         }
 
-        static bool IsStartupEnabled()
+        // "Start with Windows" is a shortcut in the user's Startup folder. Earlier versions used the
+        // registry's Run list instead, which some Windows 11 setups skip at sign-in for this app, so an
+        // old Run entry still counts as "on" and gets replaced by the shortcut.
+        static string StartupShortcut
+        {
+            get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), RunName + ".lnk"); }
+        }
+
+        static bool HasOldRunEntry()
         {
             using (var k = Registry.CurrentUser.OpenSubKey(RunKey))
                 return k != null && k.GetValue(RunName) != null;
+        }
+
+        static bool IsStartupEnabled()
+        {
+            return File.Exists(StartupShortcut) || HasOldRunEntry();
         }
 
         static void SetStartup(bool on)
         {
             try
             {
-                using (var k = Registry.CurrentUser.CreateSubKey(RunKey))
+                using (var k = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                    if (k != null && k.GetValue(RunName) != null) k.DeleteValue(RunName);
+                if (on)
                 {
-                    if (on) k.SetValue(RunName, "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
-                    else if (k.GetValue(RunName) != null) k.DeleteValue(RunName);
+                    WriteShortcut(StartupShortcut, Process.GetCurrentProcess().MainModule.FileName);
+                    Log.Write("Start with Windows: " + StartupShortcut);
                 }
+                else if (File.Exists(StartupShortcut)) File.Delete(StartupShortcut);
             }
             catch (Exception ex) { Log.Write("Startup setting failed: " + ex.Message); }
+        }
+
+        // Makes a .lnk shortcut through Windows' own scripting shell (no extra libraries needed).
+        static void WriteShortcut(string lnk, string target)
+        {
+            Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+            object shell = Activator.CreateInstance(shellType);
+            object sc = null;
+            try
+            {
+                var call = System.Reflection.BindingFlags.InvokeMethod;
+                var set = System.Reflection.BindingFlags.SetProperty;
+                sc = shellType.InvokeMember("CreateShortcut", call, null, shell, new object[] { lnk });
+                Type t = sc.GetType();
+                t.InvokeMember("TargetPath", set, null, sc, new object[] { target });
+                t.InvokeMember("WorkingDirectory", set, null, sc, new object[] { System.IO.Path.GetDirectoryName(target) });
+                t.InvokeMember("Description", set, null, sc, new object[] { "Floating mini player for YouTube Music" });
+                t.InvokeMember("Save", call, null, sc, null);
+            }
+            finally
+            {
+                if (sc != null) Marshal.FinalReleaseComObject(sc);
+                Marshal.FinalReleaseComObject(shell);
+            }
         }
 
         void Exit()
